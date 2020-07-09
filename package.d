@@ -619,7 +619,6 @@ real toReal(ℚ a){ return toReal(a.num)/toReal(a.den); } // TODO: do properly
 ℤ abs(ℤ x){ return x<0?-x:x; }
 ℚ abs(ℚ x){ return ℚ(abs(x.num),x.den); }
 
-
 ℤ nCr(ℤ n, ℤ r){
 	if(r>n) return ℤ(0);
 	ℤ c=1;
@@ -721,6 +720,7 @@ struct BitInt(bool signed=true){
 		return FNV(nbits,FNV(val.toHash()));
 	}
 }
+BitInt!true abs(BitInt!true x){ return x<0?-x:x; }
 
 
 template tryImport(string filename,string alt=""){

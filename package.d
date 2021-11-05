@@ -396,7 +396,7 @@ string highNum(T)(T i){ return digitRep(i,highDigits,'⁻'); }
 immutable dstring lowLetters="ₐ___ₑ__ₕᵢⱼₖₗₘₙₒₚ_ᵣₛₜᵤᵥ_ₓ__";
 static assert(lowLetters.length==26);
 
-string toLow(string s)in{assert(s.length);}body{
+string toLow(string s)in{assert(s.length);}do{
 	string r;
 	foreach(dchar c;s){
 		switch(c){
@@ -502,7 +502,7 @@ int opCmp(T)(T a,T b)if(is(typeof(a<b))){
 import std.bigint;
 alias ℤ=BigInt;
 
-ℤ pow(ℤ a,ℤ b)in{assert(b>=0);}body{
+ℤ pow(ℤ a,ℤ b)in{assert(b>=0);}do{
 	ℤ r=1;
 	for(;b;b/=2,a*=a)
 		if(b&1) r*=a;

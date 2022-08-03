@@ -645,12 +645,34 @@ auto nC(ℤ n){
 	if(!sign) return (a+b-1)/b;
 	return -a/b;
 }
+ℤ ceilmod(ℤ a,ℤ b){ // a-ceildiv(a,b)*b;
+	bool sign=(a<0)^(b<0);
+	auto r=a%b;
+	if(!sign&&r!=0) r-=b;
+	return r;
+}
+BitInt!true ceilmod(BitInt!true a,BitInt!true b)in{
+	assert(a.nbits==b.nbits);
+}do{
+	return BitInt!true(a.nbits, ceilmod(a.val, b.val));
+}
 
 ℤ floordiv(ℤ a,ℤ b){
 	bool sign=(a<0)^(b<0);
 	a=abs(a), b=abs(b);
 	if(!sign) return a/b;
 	return -(a+b-1)/b;
+}
+ℤ floormod(ℤ a,ℤ b){ // a-floordiv(a,b)*b;
+	bool sign=(a<0)^(b<0);
+	auto r=a%b;
+	if(sign&&r!=0) r+=b;
+	return r;
+}
+BitInt!true floormod(BitInt!true a,BitInt!true b)in{
+	assert(a.nbits==b.nbits);
+}do{
+	return BitInt!true(a.nbits, floormod(a.val, b.val));
 }
 
 ℤ ceil(ℚ x){

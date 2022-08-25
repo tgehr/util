@@ -442,14 +442,14 @@ string overline(string s){
 	string r;
 	import std.uni;
 	// TODO: some fonts appear to require the opposite order?
-	foreach(dchar d;s){ if(!combiningClass(d)) r~="\u0305"; r~=d; }
+	foreach(dchar d;s){ r~=d; if(!combiningClass(d)) r~="\u0305"; }
 	return r;
 }
 string underline(string s){
 	string r;
 	import std.uni;
 	// TODO: some fonts appear to require the opposite order?
-	foreach(dchar d;s){ if(!combiningClass(d)) r~="\u0332"; r~=d; }
+	foreach(dchar d;s){ r~=d; if(!combiningClass(d)) r~="\u0332"; }
 	return r;
 }
 import util.hashtable;

@@ -2,7 +2,14 @@
 // License: http://www.boost.org/LICENSE_1_0.txt, Boost License 1.0
 module util.hashtable;
 
-import std.typecons, std.typetuple;
+static if(size_t.sizeof==4) enum fnvp = 16777619U, fnvb = 2166136261U;
+else static if(size_t.sizeof==8) enum fnvp = 1099511628211LU, fnvb = 14695981039346656037LU;
+
+size_t FNV(size_t data, size_t start=fnvb){
+	return (start^data)*fnvp;
+}
+
+import util.tuple, std.typetuple;
 import std.functional, std.algorithm;
 import std.conv, std.array;
 
@@ -150,13 +157,6 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 		r~="]";
 		return r;
 	}
-}
-
-static if(size_t.sizeof==4) enum fnvp = 16777619U, fnvb = 2166136261U;
-else static if(size_t.sizeof==8) enum fnvp = 1099511628211LU, fnvb = 14695981039346656037LU;
-
-size_t FNV(size_t data, size_t start=fnvb){
-	return (start^data)*fnvp;
 }
 
 import std.range;

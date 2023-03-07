@@ -468,33 +468,6 @@ auto singleton(T)(T arg){
 	return s;
 }
 
-struct TupleX(T...){
-	T expand;
-	alias expand this;
-	private static hash_t getHash(T)(ref T x,hash_t b){
-		static if(is(T==class)) return FNV(x?x.toHash():0,b);
-		else static if(is(T==struct)) return FNV(x.toHash(),b);
-		else static if(is(T==string)||is(T==int)) return FNV(typeid(T).getHash(&x),b);
-		else static if(is(T==S[],S)||is(T==S[n],S,size_t n)){
-			auto r=b;
-			foreach(ref y;x) r=getHash(y,r);
-			return r;
-		}else static if(is(T==U[V],U,V)){
-			hash_t r=0;
-			foreach(k,v;x) r+=getHash(k,getHash(v,0));
-			return FNV(r,b);
-		}else static if(is(typeof(cast(hash_t)x))){
-			return FNV(cast(hash_t)x,b);
-		}else static assert(0,T.stringof);
-	}
-	hash_t toHash(){
-		auto r=fnvb;
-		foreach(i,ref x;expand) r=getHash(x,r);
-		return r;
-	}
-}
-auto tuplex(T...)(T t){ return TupleX!T(t); }
-
 int opCmp(T)(T a,T b)if(is(typeof(a<b))){
 	return a<b?-1:a==b?0:1;
 }

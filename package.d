@@ -619,6 +619,7 @@ auto nC(ℤ n){
 	return -a/b;
 }
 ℤ ceilmod(ℤ a,ℤ b){ // a-ceildiv(a,b)*b;
+	if(b==0) return a;
 	bool sign=(a<0)^(b<0);
 	auto r=a%b;
 	if(!sign&&r!=0) r-=b;
@@ -637,6 +638,7 @@ BitInt!true ceilmod(BitInt!true a,BitInt!true b)in{
 	return -(a+b-1)/b;
 }
 ℤ floormod(ℤ a,ℤ b){ // a-floordiv(a,b)*b;
+	if(b==0) return a;
 	bool sign=(a<0)^(b<0);
 	auto r=a%b;
 	if(sign&&r!=0) r+=b;

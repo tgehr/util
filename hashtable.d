@@ -41,7 +41,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 		length = 0;
 		foreach(b;ees) foreach(e;b) insert(e);
 	}
-	
+
 	private void compact(){
 		auto ees = es;
 		es = new B[](es.length/decrementFactor);
@@ -102,7 +102,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 		if(b.length>maxBucketSize&&hs!=h((*b)[0].k)&&es.length<2*length) realloc();
 		return true;
 	}
-	
+
 	void opIndexAssign(V v, K k){
 		insert(E(v,k));
 	}
@@ -128,6 +128,11 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 		foreach(ref b;es) foreach(ref e;b) if(auto r=dg(e.k, e.v)) return r;
 		return 0;
 	}
+
+	@property byKeyValue(){ return es.joiner; }
+	@property keys(){ return byKeyValue.map!((ref x)=>x.k); }
+	@property values(){ return byKeyValue.map!(function ref(ref x)=>x.v); }
+
 	bool opEquals()(ref HashMap rhs){
 		foreach(k,v;this) if(k !in rhs || rhs[k] != v) return false;
 		foreach(k,v;rhs) if(k !in this) return false;
@@ -270,7 +275,7 @@ struct SHSet(T_) if(is(T_==class)){ // small hash set
 		foreach(x;this) r~=text(x)~", ";
 		if(r.length>2) r=r[0..$-2];
 		return r~="}";
-	}	
+	}
 }
 
 auto shset(T)(T args){

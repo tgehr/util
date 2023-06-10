@@ -505,14 +505,10 @@ Lstart:;
 
 struct ℚ{
 	ℤ num=0,den=1;
-	this(long num){
-		this(num.ℤ);
-	}
+	this(T)(T num)if(!is(T==ℤ)){ this(num.ℤ); }
+	this(ℤ num){ this.num=num; }
 	this(long num,long den){
 		this(num.ℤ,den.ℤ);
-	}
-	this(ℤ num){
-		this.num=num;
 	}
 	this(ℤ num,ℤ den){
 		if(den<0){ num=-num; den=-den; }
@@ -582,11 +578,11 @@ real toReal(ℤ a){ return a.to!string.to!real; } // TODO: do properly
 real toReal(ℚ a){ return toReal(a.num)/toReal(a.den); } // TODO: do properly
 
 ℚ toℚ(T)(T arg)if(is(T==float)||is(T==double)||is(T==real)){
-	import std.numeric;
-	enum precision=64, exponentWidth=15, flags=CustomFloatFlags.signed;
-	enum bias=2^^(exponentWidth-1)-1;
-	CustomFloat!(precision,exponentWidth,flags,bias) tmp=arg;
-	return ℚ((tmp.sign?-1:1)*ℤ(tmp.significand))*pow(ℚ(2),ℤ(tmp.exponent)-bias-precision+1);
+	import std.math:ldexp,frexp,abs;
+	auto sign=arg<0,exp=0;
+	auto val=ℚ(cast(ulong)ldexp(frexp(abs(arg),exp),64));
+	if(sign) val=-val;
+	return val*pow(ℚ(2),ℤ(exp-64));
 }
 
 ℤ abs(ℤ x){ return x<0?-x:x; }

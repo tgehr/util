@@ -31,9 +31,9 @@ struct Tuple(T...){
 		return r;
 	}
 	string toString()(){ return text(this); }
-	void toString()(void delegate(scope const(char)[]) sink){
+	void toString()(scope void delegate(scope const(char)[]) sink){
 		sink("(");
-		foreach(i;0..this.length){
+		static foreach(i;0..this.length){
 			formattedWrite!"%s"(sink,this[i]);
 			static if(expand.length==1||i+1<expand.length) sink(",");
 		}

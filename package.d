@@ -3,9 +3,9 @@
 module util;
 
 // FOR DEBUGGING ONLY
-public import std.stdio;
 debug bool dwguard=true;
 void dw(T...)(lazy T args){
+	//import std.stdio;
 	debug{
 		if(dwguard){
 			dwguard=false;
@@ -21,8 +21,15 @@ int crash()(int x=0){
 }
 /////////////////////
 
-import core.stdc.stdlib;
-import core.stdc.string;
+version(WASM){
+extern(C):
+	void* malloc(size_t);
+	void* realloc(void*,size_t);
+	void* memcpy(void*,const(void)*,size_t);
+}else{
+	import core.stdc.stdlib;
+	import core.stdc.string;
+}
 
 import std.traits;
 import utf=std.utf, uni=std.uni;

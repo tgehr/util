@@ -2,9 +2,7 @@
 // License: http://www.boost.org/LICENSE_1_0.txt, Boost License 1.0
 module util.terminal;
 
-import std.stdio;
-import core.stdc.stdlib;
-import core.stdc.string;
+import util.io;
 
 enum CSI = "\033[";
 enum RESET=CSI~"0m";
@@ -18,7 +16,15 @@ enum MAGENTA=CSI~"35m";
 enum CYAN=CSI~"36m";
 enum WHITE=CSI~"37m";
 
-version(linux){
+version(WASM){
+	bool isATTy(ref File){return false;}
+	int getTabSize(){
+	    return 4;
+	}
+}else version(linux){
+	import std.stdio;
+	import core.stdc.stdlib;
+	import core.stdc.string;
 	private extern(C) size_t isatty(size_t desc);
 	private extern(C) int fileno(shared(_iobuf)*);
 	bool isATTy(ref File f){ // determine whether a given file is connected to a terminal

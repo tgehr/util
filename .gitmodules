@@ -1,0 +1,3 @@
+[submodule "webassembly"]
+	path = webassembly
+	url = git@github.com:tgehr/webassembly

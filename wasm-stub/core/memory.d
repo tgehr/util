@@ -19,4 +19,12 @@ struct GC{
         STRUCTFINAL = 0b0010_0000, // the block has a finalizer for (an array of) structs
     }
 	pragma(mangle, "gc_qalloc") static BlkInfo qalloc(size_t sz, uint ba = 0, const scope TypeInfo ti = null) pure nothrow;
+	pragma(mangle, "gc_malloc") static void* malloc(size_t sz, uint ba = 0, const scope TypeInfo ti = null) pure nothrow;
+	pragma(mangle, "gc_calloc") static void* calloc(size_t sz, uint ba = 0, const TypeInfo ti = null) pure nothrow;
+	pragma(mangle, "gc_addRange")
+    static void addRange(const void* p, size_t sz, const TypeInfo ti = null) @nogc nothrow pure;
+	pragma(mangle, "gc_removeRange") static void removeRange(const void* p) nothrow @nogc pure;
 }
+
+public import core.arsd.memory_allocation: pureMalloc = malloc;
+public import core.arsd.memory_allocation: pureFree = free;

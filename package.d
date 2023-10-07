@@ -465,7 +465,7 @@ import util.hashtable;
 //alias SetX(T)=HSet!(T,setxEq,setxToHash);
 //alias setx=hset!(setxToHash,setxEq);
 template SetX(T) if(is(T==class)){ alias SetX=SHSet!T; }
-template SetX(T) if(!is(T==class)){ alias SetX=HSet!(T,(a,b)=>a==b,a=>typeid(T).getHash(&a)); }
+template SetX(T) if(!is(T==class)){ alias SetX=HSet!(T,(a,b)=>a==b,hashOf); }
 alias setx=shset;
 alias MapX(K,V) = HashMap!(K,V,(a,b)=>a==b,a=>a.toHash());
 

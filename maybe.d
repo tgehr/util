@@ -4,7 +4,7 @@ struct Maybe(T){
 	private T payload;
 	private bool _exists;
 	bool opCast(T:bool)(){ return _exists; }
-	private this(T payload){
+	this(T payload){
 		this.payload=payload;
 		_exists=true;
 	}
@@ -33,26 +33,26 @@ Maybe!T none(T)(){ return Maybe!T(); }
 Maybe!T just(T)(T arg){ return Maybe!T(arg); }
 
 
-template fold(alias yes,alias no){
-	auto fold(T)(auto ref Maybe!T arg){
+template mfold(alias yes,alias no){
+	auto mfold(T)(auto ref Maybe!T arg){
 		if(arg._exists) return yes(arg.payload);
 		else return no();
 	}
 }
 
-template map(alias f){
+template mmap(alias f){
 	auto map(T)(auto ref Maybe!T arg){
 		return arg.fold!(x=>just(f(x)),()=>none!(typeof(f(arg.payload))));
 	}
 }
 
-Maybe!T join(T)(Maybe!(Maybe!T) arg){
+Maybe!T mjoin(T)(Maybe!(Maybe!T) arg){
 	if(arg._exists) return arg.payload;
 	return none!T;
 }
 
-template bind(alias f){
-	auto bind(T)(auto ref Maybe!T arg){
+template mbind(alias f){
+	auto mbind(T)(auto ref Maybe!T arg){
 		return arg.map!f.join;
 	}
 }

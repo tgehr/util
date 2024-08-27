@@ -41,7 +41,7 @@ template mfold(alias yes,alias no){
 }
 
 template mmap(alias f){
-	auto map(T)(auto ref Maybe!T arg){
+	auto mmap(T)(auto ref Maybe!T arg){
 		return arg.fold!(x=>just(f(x)),()=>none!(typeof(f(arg.payload))));
 	}
 }

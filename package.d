@@ -615,7 +615,9 @@ auto nC(ℤ n){
 	return NCRange(n);
 }
 
-ℤ ceildiv(ℤ a,ℤ b){
+ℤ ceildiv(ℤ a,ℤ b)in{
+	assert(b!=0);
+}do{
 	bool sign=(a<0)^(b<0);
 	a=abs(a), b=abs(b);
 	if(!sign) return (a+b-1)/b;
@@ -634,7 +636,9 @@ BitInt!true ceilmod(BitInt!true a,BitInt!true b)in{
 	return BitInt!true(a.nbits, ceilmod(a.val, b.val));
 }
 
-ℤ floordiv(ℤ a,ℤ b){
+ℤ floordiv(ℤ a,ℤ b)in{
+	assert(b!=0);
+}do{
 	bool sign=(a<0)^(b<0);
 	a=abs(a), b=abs(b);
 	if(!sign) return a/b;

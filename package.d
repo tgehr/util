@@ -741,9 +741,29 @@ string uncapitalize(string s){
 	return s[0].toLower().to!string~s[1..$];
 }
 
+private extern (C) int wcwidth(int c);
+
 int displayWidth(dchar dc){
-	return 1; // TODO: actually use width of characters
+	import locale = core.stdc.locale;
+	static didInitLocale = 0;
+	if(dc < 127) return 1;
+
+	if(!didInitLocale){
+		locale.setlocale(locale.LC_CTYPE, "");
+		didInitLocale = 1;
+	}
+
+	int w = wcwidth(dc);
+	return w < 0 ? 1 : w;
 }
-int displayWidth(string s){
-	return s.map!(c=>displayWidth(c)).fold!"a+b"(0);
+int displayWidth(string s, int tabsize=1, int start=0){
+	int res = start;
+	foreach(dchar c; s){
+		if(c=='\t'){
+			res=res-res%tabsize+tabsize;
+		} else {
+			res+=displayWidth(c);
+		}
+	}
+	return res-start;
 }

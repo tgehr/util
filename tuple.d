@@ -12,7 +12,8 @@ struct Tuple(T...){
 	private static hash_t getHash(T)(ref T x,hash_t b){
 		static if(is(T==class)) return FNV(x?x.toHash():0,b);
 		else static if(is(T==struct)) return FNV(x.toHash(),b);
-		else static if(is(T==string)||is(T==int)) return FNV(hashOf(x),b);
+		else static if(is(T==string)||is(T==int)||is(T==float)||is(T==double)||is(T==real))
+			return FNV(hashOf(x),b);
 		else static if(is(T==S[],S)||is(T==S[n],S,size_t n)){
 			auto r=b;
 			foreach(ref y;x) r=getHash(y,r);

@@ -524,6 +524,9 @@ struct ℚ{
 		this.num=num;
 		this.den=den;
 	}
+	ℚ opUnary(string op:"+")(){
+		return this;
+	}
 	ℚ opUnary(string op:"-")(){
 		return ℚ(-num,den);
 	}

@@ -72,6 +72,6 @@ string toStringRT(T)(T x,bool pythonStyle=true)if(isFloatingPoint!T){
     return snprintfHex!T(x);
 }
 string toStringRT(T)(Complex!T x,bool pythonStyle=false)if(isFloatingPoint!T){
-	if(x.re!=0) return toStringRT(x.re,pythonStyle)~"+"~toStringRT(x.im,pythonStyle)~"i";
+	if(x.re!=0) return toStringRT(x.re,pythonStyle)~(x.im<0?"":"+")~toStringRT(x.im,pythonStyle)~"i";
 	return toStringRT(x.im,pythonStyle)~"i";
 }

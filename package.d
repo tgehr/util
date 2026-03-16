@@ -490,7 +490,7 @@ alias ℤ=BigInt;
 }
 
 ℤ gcd(ℤ a,ℤ b){
-	if(b<0) return a<0?-gcd(-a,-b):gcd(a,-b);
+	if(a<0||b<0) return gcd(abs(a),abs(b));
 	ℤ f=1;
 Lstart:;
 	if(a==b) return a*f;

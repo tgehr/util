@@ -703,7 +703,7 @@ struct BitInt(bool signed=true){
 		return val.opCmp(rhs.val);
 	}
 	bool opEquals(T)(T rhs)if(!is(rhs==BitInt)&&is(typeof(val==ℤ(rhs)))){
-		return val==ℤ(rhs);
+		return val==rhs;
 	}
 	int opCmp(T)(T rhs)if(!is(rhs==BitInt)&&is(typeof(val.opCmp(ℤ(rhs))))){
 		return val.opCmp(rhs);
@@ -729,6 +729,58 @@ struct BitInt(bool signed=true){
 }
 BitInt!true abs(BitInt!true x){ return x<0?-x:x; }
 
+struct ℤmod{
+	ℤ N;
+	ℤ val;
+	this(ℤ N,ℤ val){
+		this.N=N;
+		this.val=val;
+		wrap();
+	}
+	void wrap(){
+		val%=N;
+		if(val<0) val+=N;
+	}
+
+	ℤmod opBinary(string op)(ℤmod r)if(!op.among("<<",">>"))in{
+		assert(N==r.N);
+	}do{
+		return ℤmod(N,mixin(`val `~op~` r.val`));
+	}
+	ℤmod opUnary(string op)(){
+		return ℤmod(N,mixin(op~` val`));
+	}
+	bool opEquals(ℤmod rhs){
+		return val==rhs.val;
+	}
+	int opCmp(ℤmod rhs){
+		return val.opCmp(rhs.val);
+	}
+	bool opEquals(T)(T rhs)if(!is(rhs==ℤmod)&&is(typeof(val==ℤ(rhs)))){
+		return val==rhs;
+	}
+	int opCmp(T)(T rhs)if(!is(rhs==ℤmod)&&is(typeof(val.opCmp(ℤ(rhs))))){
+		return val.opCmp(rhs);
+	}
+	bool opEquals(double rhs){
+		return toReal(val)==rhs; // TODO: improve?
+	}
+	int opCmp(double rhs){
+		return toReal(val).opCmp(rhs); // TODO: improve?
+	}
+	bool opEquals(ℚ rhs){
+		return rhs==val;
+	}
+	int opCmp(ℚ rhs){
+		return -rhs.opCmp(val);
+	}
+	string toString(){
+		return text(val);
+	}
+	hash_t toHash(){
+		return FNV(N.toHash(),FNV(val.toHash()));
+	}
+}
 
 template tryImport(string filename,string alt=""){
 	static if(__traits(compiles,import(filename))) enum tryImport = import(filename)[0..$-1];

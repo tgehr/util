@@ -23,9 +23,12 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 	static struct E{ // TODO: why can't the two fields be swapped?
 		V v;
 		K k;
-		this(E e){ static if(!is(V==void[0])) this.v=move(e.v); static if(!is(K==void[0])) this.k=move(e.k); }
-		this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; }
-		@disable this(this);
+		version(D_OpenD){} // no move constructors
+		else{
+			this(E e){ static if(!is(V==void[0])) this.v=move(e.v); static if(!is(K==void[0])) this.k=move(e.k); }
+			this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; }
+			@disable this(this);
+		}
 	}
 	alias E[] B;
 	B[] es;

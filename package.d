@@ -742,10 +742,31 @@ struct ℤmod{
 		if(val<0) val+=N;
 	}
 
-	ℤmod opBinary(string op)(ℤmod r)if(!op.among("<<",">>"))in{
+	ℤmod opBinary(string op)(ℤmod r)if(!op.among("<<",">>","^^"))in{
 		assert(N==r.N);
 	}do{
 		return ℤmod(N,mixin(`val `~op~` r.val`));
+	}
+	ℤmod opBinary(string op:"^^")(ℤ r){
+		auto t=ℤmod(N,1.ℤ),x=this;
+		if(r<0){
+			r=-r;
+			x=x.inv();
+		}
+		for(;r;r>>=1,x=x*x)
+			if(r&1) t=t*x;
+		return t;
+	}
+	ℤmod inv(){
+		auto x=val,y=N-val,u=ℤmod(N,1.ℤ),v=ℤmod(N,-1.ℤ);
+		while(y){
+			auto ny=x%y,nv=u-ℤmod(N,x/y)*v;
+			x=y,u=v;
+			y=ny,v=nv;
+		}
+		assert(x==1);
+		assert(this*u==ℤmod(N,1.ℤ));
+		return u;
 	}
 	ℤmod opUnary(string op)(){
 		return ℤmod(N,mixin(op~` val`));

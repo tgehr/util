@@ -15,6 +15,15 @@ import std.conv, std.array;
 
 //import util;
 
+enum hasMoveConstructors = __traits(compiles,(){
+	static struct Probe{
+		int x;
+		this(Probe p){ this.x=p.x; }
+		this(ref inout(Probe) p)inout{ this.x=p.x; }
+		@disable this(this);
+	}
+});
+
 struct HashMap(K_, V_, alias eq_ , alias h_){
 	alias K=K_;
 	alias V=V_;
@@ -23,12 +32,10 @@ struct HashMap(K_, V_, alias eq_ , alias h_){
 	static struct E{ // TODO: why can't the two fields be swapped?
 		V v;
 		K k;
-		version(D_OpenD){} // no move constructors
-		else{
+		static if(hasMoveConstructors)
 			this(E e){ static if(!is(V==void[0])) this.v=move(e.v); static if(!is(K==void[0])) this.k=move(e.k); }
-			this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; }
-			@disable this(this);
-		}
+		this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; }
+		@disable this(this);
 	}
 	alias E[] B;
 	B[] es;

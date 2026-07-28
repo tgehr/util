@@ -2,6 +2,7 @@ module util.optparse;
 import std.algorithm: startsWith;
 import std.stdio: stderr;
 import std.string: indexOf;
+import util: MapX, MapSX;
 
 private struct OptHandler {
 	int value; // 0=no value, 1=has value, -1=may have value (always uses handle1)
@@ -33,8 +34,8 @@ private struct BoolHandler {
 }
 
 struct OptParser {
-	OptHandler[string] longOpts;
-	OptHandler[char] shortOpts;
+	MapSX!(string,OptHandler) longOpts;
+	MapSX!(char,OptHandler) shortOpts;
 
 	private void addHandler(char opt, OptHandler h) {
 		assert(opt !in shortOpts);
@@ -121,7 +122,7 @@ struct OptParser {
 					pos = arg.length;
 				}
 				arg = arg[2..pos];
-				auto opt = arg in longOpts;
+				auto opt = longOpts.getPtr(arg);
 				if(!opt) {
 					stderr.writef("error: unknown option --%s\n", arg);
 					return 1;
@@ -149,7 +150,7 @@ struct OptParser {
 			size_t j = 1;
 			while(j < arg.length) {
 				char c = arg[j++];
-				auto opt = c in shortOpts;
+				auto opt = shortOpts.getPtr(c);
 				if(!opt) {
 					stderr.writef("error: unknown option -%c\n", c);
 					return 1;

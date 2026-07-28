@@ -186,9 +186,6 @@ auto noOpAppender(T)(size_t initial=1){
 
 alias GCAlloc.New New; // transparently replace allocator
 
-int ctag;
-int[void*] tag;
-
 struct GCAlloc{
 	static:
 	auto New(T,A...)(A args){
@@ -281,13 +278,6 @@ string toEngNum(uint i){ // pure
 
 // a really fast downcast. only works if the argument is of the exact class type T
 T fastCast(T,R)(R x) if(isFinal!T){return typeid(x) is typeid(T)?cast(T)cast(void*)x:null;}
-
-struct AAbyIdentity(K,V){
-	V[K] x;
-	size_t opHash()const @trusted pure nothrow{ return cast(size_t)cast(void*)x; }
-	int opEquals(const ref AAbyIdentity rhs)const @safe pure nothrow{ return x is rhs.x; }
-}
-auto byid(K,V)(V[K] x){ return AAbyIdentity!(K,V)(x); }
 
 // compile time file facilites:
 template FileExists(string name){enum FileExists = is(typeof(import(name)));}
@@ -467,7 +457,13 @@ import util.hashtable;
 template SetX(T) if(is(T==class)){ alias SetX=SHSet!T; }
 template SetX(T) if(!is(T==class)){ alias SetX=HSet!(T,(a,b)=>a==b,hashOf); }
 alias setx=shset;
-alias MapX(K,V) = HashMap!(K,V,(a,b)=>a==b,a=>a.toHash());
+alias MapX(K,V) = HashMap!(K,V,(a,b)=>a==b,hashOf);
+
+// pointer-stable variants: getPtr/opIndex/require leak pointers/references
+// that remain valid across insertions and removals of other entries
+template SetSX(T) if(is(T==class)){ alias SetSX=SHSet!(T,Storage.stable); }
+template SetSX(T) if(!is(T==class)){ alias SetSX=HSet!(T,(a,b)=>a==b,hashOf,Storage.stable); }
+alias MapSX(K,V) = HashMap!(K,V,(a,b)=>a==b,hashOf,Storage.stable);
 
 auto singleton(T)(T arg){
 	SetX!T s;

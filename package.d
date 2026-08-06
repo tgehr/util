@@ -458,12 +458,14 @@ template SetX(T) if(is(T==class)){ alias SetX=SHSet!T; }
 template SetX(T) if(!is(T==class)){ alias SetX=HSet!(T,(a,b)=>a==b,hashOf); }
 alias setx=shset;
 alias MapX(K,V) = HashMap!(K,V,(a,b)=>a==b,hashOf);
+alias IdMapX(K,V) = HashMap!(K,V,(a,b)=>a is b,a=>hashOf(cast(void*)a));
 
 // pointer-stable variants: getPtr/opIndex/require leak pointers/references
 // that remain valid across insertions and removals of other entries
 template SetSX(T) if(is(T==class)){ alias SetSX=SHSet!(T,Storage.stable); }
 template SetSX(T) if(!is(T==class)){ alias SetSX=HSet!(T,(a,b)=>a==b,hashOf,Storage.stable); }
 alias MapSX(K,V) = HashMap!(K,V,(a,b)=>a==b,hashOf,Storage.stable);
+alias IdMapSX(K,V) = HashMap!(K,V,(a,b)=>a is b,a=>hashOf(cast(void*)a),Storage.stable);
 
 auto singleton(T)(T arg){
 	SetX!T s;

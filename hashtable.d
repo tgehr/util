@@ -21,7 +21,7 @@ size_t mixHash(size_t h){ // murmur3 finalizer, avoids collisions from summing u
 	return h;
 }
 
-import util.tuple, std.typetuple;
+import util.tuple, util.maybe, std.typetuple;
 import std.functional, std.algorithm;
 import std.conv, std.array;
 import core.lifetime: copyEmplace, moveEmplace;
@@ -124,7 +124,11 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 
 		// locates k (found=true, entryPos set) or the slot it should occupy
 		bool probe(K k,out size_t slot,out size_t entryPos){
-			auto i=h(k)&mask, firstDeleted=size_t.max;
+			return probe(k,h(k),slot,entryPos);
+		}
+		// same, with hk==h(k) precomputed by the caller
+		bool probe(K k,size_t hk,out size_t slot,out size_t entryPos){
+			auto i=hk&mask, firstDeleted=size_t.max;
 			while(true){
 				auto ix=index[i];
 				if(ix==EMPTY){
@@ -151,16 +155,20 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 			deletedSlots=0;
 		}
 
-		void ensureCapacity(){
+		// makes room for one more entry; returns whether the index was rebuilt
+		// (which invalidates slots obtained from earlier probes)
+		bool ensureCapacity(){
 			if(10*(length+deletedSlots+1)>7*index.length){
 				static if(!stable){
 					if(tombstones*2>length+1){
 						compactEntries();
-						return;
+						return true;
 					}
 				}
 				rehash(index.length*2);
+				return true;
 			}
+			return false;
 		}
 
 		ref V insert(E x, out bool isNew){
@@ -172,6 +180,13 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 				isNew=false;
 				return entryAt(p).v;
 			}
+			isNew=true;
+			return insertAt(move(x),s);
+		}
+
+		// inserts x, whose key must be absent, at index slot s, which must come from a
+		// probe for x.k made after the last index rebuild (see ensureCapacity)
+		ref V insertAt(E x, size_t s){
 			if(index[s]==DELETED) deletedSlots--;
 			assert(eused<DELETED); // indices must fit
 			auto pos=appendSlot();
@@ -179,8 +194,18 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 			copyEmplace(x, entryAt(pos));
 			tombAt(pos)=0;
 			length++;
-			isNew=true;
 			return entryAt(pos).v;
+		}
+
+		// removes the entry at position p, which was found at index slot s
+		void removeAt(size_t s,size_t p){
+			index[s]=DELETED;
+			deletedSlots++;
+			tombAt(p)=1;
+			static if(!stable) tombstones++;
+			entryAt(p).v=V.init; // release references
+			entryAt(p).k=K.init;
+			length--;
 		}
 	}
 
@@ -243,13 +268,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 		if(!state) return false;
 		size_t s,p;
 		if(!state.probe(k,s,p)) return false;
-		state.index[s]=State.DELETED;
-		state.deletedSlots++;
-		state.tombAt(p)=1;
-		static if(!stable) state.tombstones++;
-		state.entryAt(p).v=V.init; // release references
-		state.entryAt(p).k=K.init;
-		state.length--;
+		state.removeAt(s,p);
 		return true;
 	}
 
@@ -369,6 +388,36 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 		return r;
 	}
 }
+
+/+ Read-modify-write of the entry for k in m that computes the hash of k and probes
+ the table only once (cf. Haskell's Data.Map.alter). f receives the current value
+ (none!V if k is absent) and returns the new one: just(v) stores v under k, none!V
+ removes k (or leaves it absent). f must not access m.
+ Example: m.alter!(old=>just((old?old.get:0)+1))(k);
+ (This is not a member function so that f can be a local lambda.) +/
+import std.traits:TemplateOf;
+void alter(alias f,M,K)(ref M m,K key)if(__traits(isSame,TemplateOf!M,HashMap)&&is(K:M.K)&&!is(M.V==void[0])){
+	alias V=M.V, E=M.E;
+	M.K k=key;
+	immutable hk=m.h(k);
+	size_t s,p;
+	auto state=m.state;
+	immutable found=state&&state.index.length&&state.probe(k,hk,s,p);
+	Maybe!V nv=f(found?just(state.entryAt(p).v):none!V);
+	if(found){
+		if(nv) state.entryAt(p).v=move(nv.get());
+		else state.removeAt(s,p);
+		return;
+	}
+	if(!nv) return;
+	state=m.ensureState();
+	bool rebuilt=!state.index.length;
+	if(rebuilt) state.initialize();
+	rebuilt|=state.ensureCapacity();
+	if(rebuilt) state.probe(k,hk,s,p); // (k is absent, this only locates a free slot)
+	state.insertAt(E(move(nv.get()),k),s);
+}
+
 import std.range;
 struct HSet(T_,alias eq, alias h, Storage storage_=Storage.compact){
 	alias T=T_;

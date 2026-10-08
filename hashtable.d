@@ -8,6 +8,18 @@ else static if(size_t.sizeof==8) enum fnvp = 1099511628211LU, fnvb = 14695981039
 size_t FNV(size_t data, size_t start=fnvb){
 	return (start^data)*fnvp;
 }
+size_t mixHash(size_t h){ // murmur3 finalizer, avoids collisions from summing up FNV hashes
+	static if(size_t.sizeof==8){
+		h^=h>>>33; h*=0xff51afd7ed558ccdLU;
+		h^=h>>>33; h*=0xc4ceb3fe1a85ec53LU;
+		h^=h>>>33;
+	}else{
+		h^=h>>>16; h*=0x85ebca6bU;
+		h^=h>>>13; h*=0xc2b2ae35U;
+		h^=h>>>16;
+	}
+	return h;
+}
 
 import util.tuple, std.typetuple;
 import std.functional, std.algorithm;
@@ -316,7 +328,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 	hash_t toHash()(){
 		if(!state) return 0;
 		hash_t r=0;
-		foreach(i;0..state.eused) if(!state.tombAt(i)) r+=FNV(h(state.entryAt(i).k),FNV(state.entryAt(i).v.toHash(),fnvb)); // TODO: improve
+		foreach(i;0..state.eused) if(!state.tombAt(i)) r+=mixHash(FNV(h(state.entryAt(i).k),FNV(state.entryAt(i).v.toHash(),fnvb)));
 		return r;
 	}
 
@@ -366,7 +378,7 @@ struct HSet(T_,alias eq, alias h, Storage storage_=Storage.compact){
 	@property size_t length(){ return payload.length; }
 	hash_t toHash(){
 		hash_t r=0;
-		foreach(x;this) r+=FNV(h(x));
+		foreach(x;this) r+=mixHash(FNV(h(x)));
 		return r;
 	}
 	bool opBinaryRight(string op: "in")(T t){
@@ -424,7 +436,7 @@ struct SHSet(T_, Storage storage_=Storage.compact) if(is(T_==class)){ // small h
 		return large.length;
 	}
 	hash_t toHash(){
-		if(isSmall){ hash_t r; foreach(x;small) if(x !is null) r+=FNV(x.toHash()); return r; }
+		if(isSmall){ hash_t r; foreach(x;small) if(x !is null) r+=mixHash(FNV(x.toHash())); return r; }
 		return large.toHash();
 	}
 	bool opBinaryRight(string op: "in")(T t){

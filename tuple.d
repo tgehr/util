@@ -2,7 +2,7 @@ module util.tuple;
 
 import std.format:formattedWrite;
 import std.conv:text;
-import util.hashtable:FNV,fnvb;
+import util.hashtable:FNV,fnvb,mixHash;
 import core.lifetime:forward;
 import util:opCmp;
 
@@ -20,7 +20,7 @@ struct Tuple(T...){
 			return r;
 		}else static if(is(T==U[V],U,V)){
 			hash_t r=0;
-			foreach(k,v;x) r+=getHash(k,getHash(v,0));
+			foreach(k,v;x) r+=mixHash(getHash(k,getHash(v,0)));
 			return FNV(r,b);
 		}else static if(is(typeof(cast(hash_t)x))){
 			return FNV(cast(hash_t)x,b);

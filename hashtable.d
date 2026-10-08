@@ -39,20 +39,24 @@ enum hasMoveConstructors = __traits(compiles,(){
 
 enum Storage{ compact, stable }
 
-struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
+enum hasCheapHash(T)=isScalarType!T;
+
+struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, bool storeHash_=!hasCheapHash!K_){
 	alias K=K_;
 	alias V=V_;
 	alias binaryFun!eq_ eq;
 	alias unaryFun!h_ h;
 	enum stable = storage_==Storage.stable;
+	enum storeHash = storeHash_;
 	static struct E{ // TODO: why can't the two fields be swapped?
 		V v;
 		K k;
+		static if(storeHash) size_t hash; // h(k), set on insertion
 		static if(!is(V==void[0])) this(V v, K k){ this.v=v; this.k=k; }
 		else this(K k){ this.k=k; }
 		static if(hasMoveConstructors)
-			this(E e){ static if(!is(V==void[0])) this.v=move(e.v); static if(!is(K==void[0])) this.k=move(e.k); }
-		this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; }
+			this(E e){ static if(!is(V==void[0])) this.v=move(e.v); static if(!is(K==void[0])) this.k=move(e.k); static if(storeHash) this.hash=e.hash; }
+		this(ref inout(E) e)inout{ this.v=e.v; this.k=e.k; static if(storeHash) this.hash=e.hash; }
 		@disable this(this);
 	}
 
@@ -136,9 +140,20 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 					return false;
 				}
 				if(ix==DELETED){ if(firstDeleted==size_t.max) firstDeleted=i; }
-				else if(eq(k,entryAt(ix).k)){ slot=i; entryPos=ix; return true; }
+				else if(hashMayMatch(ix,hk)&&eq(k,entryAt(ix).k)){ slot=i; entryPos=ix; return true; }
 				i=(i+1)&mask;
 			}
+		}
+
+		// h of the key of the (live) entry at position p
+		size_t hashAt(size_t p){
+			static if(storeHash) return entryAt(p).hash;
+			else return h(entryAt(p).k);
+		}
+		// false if the key at position p certainly does not have hash hk
+		bool hashMayMatch(size_t p,size_t hk){
+			static if(storeHash) return entryAt(p).hash==hk;
+			else return true;
 		}
 
 		void rehash(size_t newSize){
@@ -147,7 +162,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 			auto nmask=newSize-1;
 			foreach(pos;0..eused){
 				if(tombAt(pos)) continue;
-				auto i=h(entryAt(pos).k)&nmask;
+				auto i=hashAt(pos)&nmask;
 				while(ni[i]!=EMPTY) i=(i+1)&nmask;
 				ni[i]=cast(uint)pos;
 			}
@@ -174,27 +189,40 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 		ref V insert(E x, out bool isNew){
 			if(!index.length) initialize();
 			ensureCapacity();
+			immutable hk=h(x.k);
+			static if(storeHash) x.hash=hk; // (x may overwrite an existing entry)
 			size_t s,p;
-			if(probe(x.k,s,p)){
+			if(probe(x.k,hk,s,p)){
 				copyEmplace(x, entryAt(p));
 				isNew=false;
 				return entryAt(p).v;
 			}
 			isNew=true;
-			return insertAt(move(x),s);
+			return insertAt(move(x),hk,s);
 		}
 
-		// inserts x, whose key must be absent, at index slot s, which must come from a
-		// probe for x.k made after the last index rebuild (see ensureCapacity)
-		ref V insertAt(E x, size_t s){
+		// inserts x, whose key must be absent and have hash hk, at index slot s, which
+		// must come from a probe for x.k made after the last index rebuild (see ensureCapacity)
+		ref V insertAt(E x, size_t hk, size_t s){
 			if(index[s]==DELETED) deletedSlots--;
 			assert(eused<DELETED); // indices must fit
 			auto pos=appendSlot();
 			index[s]=cast(uint)pos;
 			copyEmplace(x, entryAt(pos));
+			static if(storeHash) entryAt(pos).hash=hk;
 			tombAt(pos)=0;
 			length++;
 			return entryAt(pos).v;
+		}
+
+		// like insertAt, but makes room first; s is used only if haveSlot and the
+		// table is not rebuilt in the meantime (otherwise, x.k is probed again)
+		ref V insertAbsent(E x, size_t hk, size_t s, bool haveSlot){
+			if(!index.length){ initialize(); haveSlot=false; }
+			if(ensureCapacity()) haveSlot=false;
+			size_t p;
+			if(!haveSlot) probe(x.k,hk,s,p); // (x.k is absent, this only locates a free slot)
+			return insertAt(move(x),hk,s);
 		}
 
 		// removes the entry at position p, which was found at index slot s
@@ -286,14 +314,16 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 		}
 	}
 	void opIndexOpAssign(string op,W)(W w, K k){
-		if(auto p=findPtr(k)){ // used immediately, no mutation in between
-			mixin(`*p `~op~`= w;`);
+		immutable hk=h(k);
+		size_t s,p;
+		immutable probed=state&&state.index.length;
+		if(probed&&state.probe(k,hk,s,p)){
+			mixin(`state.entryAt(p).v `~op~`= w;`);
 			return;
 		}
 		V v; mixin(`v` ~op~`= w;`);
-		bool isNew;
-		static if(is(V==void[0])) ensureState().insert(E(k),isNew);
-		else ensureState().insert(E(v,k),isNew);
+		static if(is(V==void[0])) ensureState().insertAbsent(E(k),hk,s,probed);
+		else ensureState().insertAbsent(E(v,k),hk,s,probed);
 	}
 
 	int opApply(scope int delegate(ref V) dg){
@@ -340,14 +370,21 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
 	@property byValue(){ return values; }
 
 	bool opEquals()(ref HashMap rhs){
-		foreach(k,v;this) if(k !in rhs || rhs[k] != v) return false;
-		foreach(k,v;rhs) if(k !in this) return false;
+		// equal lengths and all keys of this in rhs imply equal key sets
+		if(length!=rhs.length) return false;
+		if(!length) return true;
+		foreach(i;0..state.eused){
+			if(state.tombAt(i)) continue;
+			size_t s,p;
+			if(!rhs.state.probe(state.entryAt(i).k,state.hashAt(i),s,p)) return false;
+			if(rhs.state.entryAt(p).v!=state.entryAt(i).v) return false;
+		}
 		return true;
 	}
 	hash_t toHash()(){
 		if(!state) return 0;
 		hash_t r=0;
-		foreach(i;0..state.eused) if(!state.tombAt(i)) r+=mixHash(FNV(h(state.entryAt(i).k),FNV(state.entryAt(i).v.toHash(),fnvb)));
+		foreach(i;0..state.eused) if(!state.tombAt(i)) r+=mixHash(FNV(state.hashAt(i),FNV(state.entryAt(i).v.toHash(),fnvb)));
 		return r;
 	}
 
@@ -395,14 +432,15 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact){
  removes k (or leaves it absent). f must not access m.
  Example: m.alter!(old=>just((old?old.get:0)+1))(k);
  (This is not a member function so that f can be a local lambda.) +/
-import std.traits:TemplateOf;
+import std.traits:TemplateOf,isScalarType;
 void alter(alias f,M,K)(ref M m,K key)if(__traits(isSame,TemplateOf!M,HashMap)&&is(K:M.K)&&!is(M.V==void[0])){
 	alias V=M.V, E=M.E;
 	M.K k=key;
 	immutable hk=m.h(k);
 	size_t s,p;
 	auto state=m.state;
-	immutable found=state&&state.index.length&&state.probe(k,hk,s,p);
+	immutable probed=state&&state.index.length;
+	immutable found=probed&&state.probe(k,hk,s,p);
 	Maybe!V nv=f(found?just(state.entryAt(p).v):none!V);
 	if(found){
 		if(nv) state.entryAt(p).v=move(nv.get());
@@ -410,24 +448,21 @@ void alter(alias f,M,K)(ref M m,K key)if(__traits(isSame,TemplateOf!M,HashMap)&&
 		return;
 	}
 	if(!nv) return;
-	state=m.ensureState();
-	bool rebuilt=!state.index.length;
-	if(rebuilt) state.initialize();
-	rebuilt|=state.ensureCapacity();
-	if(rebuilt) state.probe(k,hk,s,p); // (k is absent, this only locates a free slot)
-	state.insertAt(E(move(nv.get()),k),s);
+	m.ensureState().insertAbsent(E(move(nv.get()),k),hk,s,probed);
 }
 
 import std.range;
-struct HSet(T_,alias eq, alias h, Storage storage_=Storage.compact){
+struct HSet(T_,alias eq, alias h, Storage storage_=Storage.compact, bool storeHash_=true){
 	alias T=T_;
-	private HashMap!(T,void[0],eq,h,storage_) payload;
+	private HashMap!(T,void[0],eq,h,storage_,storeHash_) payload;
 	void clear(){ payload.clear(); }
 	auto dup(){ return HSet(payload.dup); }
 	@property size_t length(){ return payload.length; }
 	hash_t toHash(){
+		auto st=payload.state;
+		if(!st) return 0;
 		hash_t r=0;
-		foreach(x;this) r+=mixHash(FNV(h(x)));
+		foreach(i;0..st.eused) if(!st.tombAt(i)) r+=mixHash(FNV(st.hashAt(i))); // (=h(x))
 		return r;
 	}
 	bool opBinaryRight(string op: "in")(T t){
@@ -446,9 +481,7 @@ struct HSet(T_,alias eq, alias h, Storage storage_=Storage.compact){
 		return 0;
 	}
 	bool opEquals(ref HSet rhs){
-		foreach(x;this) if(x !in rhs) return false;
-		foreach(x;rhs) if(x !in this) return false;
-		return true;
+		return payload==rhs.payload;
 	}
 	static if(is(typeof(text(T.init)))) string toString(){
 		string r="{";

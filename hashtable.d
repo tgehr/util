@@ -62,8 +62,16 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 
 	private class State{
 		static if(stable){
-			enum chunkShift=6;
-			enum chunkSize=1<<chunkShift, chunkMask=chunkSize-1;
+			// Chunk sizes double (4, 8, 16, ...), so that small tables stay small:
+			// chunk c holds entry positions [chunkStart(c), chunkStart(c+1)).
+			enum firstChunkShift=2;
+			static size_t chunkStart(size_t c){ return ((size_t(1)<<c)-1)<<firstChunkShift; }
+			static size_t chunkLength(size_t c){ return size_t(1)<<(c+firstChunkShift); }
+			static void locate(size_t p,out size_t c,out size_t o){
+				import core.bitop:bsr;
+				c=bsr((p>>firstChunkShift)+1);
+				o=p-chunkStart(c);
+			}
 			E[][] chunks;     // chunked entry storage
 			ubyte[][] tombs;  // tombs[i][j] != 0 iff chunks[i][j] is removed
 		}else{
@@ -88,12 +96,13 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 		static assert((initialIndexSize&(initialIndexSize-1))==0);
 
 		static if(stable){
-			ref E entryAt(size_t p){ return chunks[p>>chunkShift][p&chunkMask]; }
-			ref ubyte tombAt(size_t p){ return tombs[p>>chunkShift][p&chunkMask]; }
+			ref E entryAt(size_t p){ size_t c,o; locate(p,c,o); return chunks[c][o]; }
+			ref ubyte tombAt(size_t p){ size_t c,o; locate(p,c,o); return tombs[c][o]; }
 			size_t appendSlot(){ // returns position of a fresh entry slot
-				if((eused&chunkMask)==0){
-					chunks~=new E[](chunkSize);
-					tombs~=new ubyte[](chunkSize);
+				if(eused==chunkStart(chunks.length)){
+					auto n=chunkLength(chunks.length);
+					chunks~=new E[](n);
+					tombs~=new ubyte[](n);
 				}
 				return eused++;
 			}
@@ -132,7 +141,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 		}
 		// same, with hk==h(k) precomputed by the caller
 		bool probe(K k,size_t hk,out size_t slot,out size_t entryPos){
-			auto i=hk&mask, firstDeleted=size_t.max;
+			auto i=slotOf(hk)&mask, firstDeleted=size_t.max;
 			while(true){
 				auto ix=index[i];
 				if(ix==EMPTY){
@@ -145,6 +154,16 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 			}
 		}
 
+		// Many hashes have weak low bits (e.g., the default toHash of class objects is their
+		// address), so index slots are derived from the middle bits of a Fibonacci hash,
+		// which depend on all lower bits of the hash. Integer keys are typically hashed
+		// by identity and often dense, where taking the low bits directly is best.
+		enum mixSlots=!isIntegral!K&&!isSomeChar!K&&!is(K==bool);
+		static size_t slotOf(size_t hk){
+			static if(!mixSlots) return hk;
+			else static if(size_t.sizeof==8) return (hk*0x9e3779b97f4a7c15LU)>>>32; // (index sizes are < 2^32)
+			else return mixHash(hk); // (a 32-bit Fibonacci hash would leave too few usable bits)
+		}
 		// h of the key of the (live) entry at position p
 		size_t hashAt(size_t p){
 			static if(storeHash) return entryAt(p).hash;
@@ -162,7 +181,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 			auto nmask=newSize-1;
 			foreach(pos;0..eused){
 				if(tombAt(pos)) continue;
-				auto i=hashAt(pos)&nmask;
+				auto i=slotOf(hashAt(pos))&nmask;
 				while(ni[i]!=EMPTY) i=(i+1)&nmask;
 				ni[i]=cast(uint)pos;
 			}
@@ -344,10 +363,11 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 			private E[][] chunks;
 			private ubyte[][] tombs;
 			private size_t pos, n;
-			private void skip(){ while(pos<n&&tombs[pos>>State.chunkShift][pos&State.chunkMask]) pos++; }
+			private bool tombAt(size_t p){ size_t c,o; State.locate(p,c,o); return !!tombs[c][o]; }
+			private void skip(){ while(pos<n&&tombAt(pos)) pos++; }
 			private this(E[][] chunks,ubyte[][] tombs,size_t n){ this.chunks=chunks; this.tombs=tombs; this.n=n; skip(); }
 			@property bool empty(){ return pos>=n; }
-			@property ref E front(){ return chunks[pos>>State.chunkShift][pos&State.chunkMask]; }
+			@property ref E front(){ size_t c,o; State.locate(pos,c,o); return chunks[c][o]; }
 			void popFront(){ pos++; skip(); }
 		}
 		@property byKeyValue(){ return state?EntryRange(state.chunks,state.tombs,state.eused):EntryRange.init; }
@@ -397,10 +417,10 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 			r.state.chunks=new E[][](state.chunks.length);
 			r.state.tombs=new ubyte[][](state.tombs.length);
 			foreach(i;0..state.chunks.length){
-				r.state.chunks[i]=new E[](State.chunkSize);
+				r.state.chunks[i]=new E[](State.chunkLength(i));
 				r.state.tombs[i]=state.tombs[i].dup;
-				auto base=i*State.chunkSize;
-				auto n=base+State.chunkSize<=state.eused?State.chunkSize:state.eused-base;
+				auto base=State.chunkStart(i);
+				auto n=min(State.chunkLength(i),state.eused-base);
 				foreach(j;0..n) copyEmplace(state.chunks[i][j], r.state.chunks[i][j]); // honor copy constructors
 			}
 		}else{
@@ -432,7 +452,7 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
  removes k (or leaves it absent). f must not access m.
  Example: m.alter!(old=>just((old?old.get:0)+1))(k);
  (This is not a member function so that f can be a local lambda.) +/
-import std.traits:TemplateOf,isScalarType;
+import std.traits:TemplateOf,isScalarType,isIntegral,isSomeChar;
 void alter(alias f,M,K)(ref M m,K key)if(__traits(isSame,TemplateOf!M,HashMap)&&is(K:M.K)&&!is(M.V==void[0])){
 	alias V=M.V, E=M.E;
 	M.K k=key;

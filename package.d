@@ -834,8 +834,9 @@ int displayWidth(dchar dc){
 	return w < 0 ? 1 : w;
 }
 int displayWidth(string s, int tabsize=1, int start=0){
+	import std.utf: byDchar; // (does not throw on invalid UTF-8, yields U+FFFD instead; this is called on source code that may be malformed)
 	int res = start;
-	foreach(dchar c; s){
+	foreach(dchar c; s.byDchar){
 		if(c=='\t'){
 			res=res-res%tabsize+tabsize;
 		} else {

@@ -131,7 +131,9 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 				eused=w;
 				tombstones=0;
 				tombstone[0..eused]=0;
-				rehash(index.length);
+				auto size=index.length;
+				while(size>initialIndexSize&&10*(length+1)<=7*(size/4)) size/=2; // (after many removals)
+				rehash(size);
 			}
 		}
 
@@ -192,6 +194,12 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 		// makes room for one more entry; returns whether the index was rebuilt
 		// (which invalidates slots obtained from earlier probes)
 		bool ensureCapacity(){
+			static if(!stable){
+				if(tombstones>length+8){ // (also when insertions reuse the deleted index slots, e.g., of entries that are removed and inserted again)
+					compactEntries();
+					return true;
+				}
+			}
 			if(10*(length+deletedSlots+1)>7*index.length){
 				static if(!stable){
 					if(tombstones*2>length+1){
@@ -264,6 +272,10 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 	bool opBinaryRight(string op: "in")(K k){
 		size_t s,p;
 		return state&&state.probe(k,s,p);
+	}
+	bool tryGetPosition(K k,out size_t pos){ // (of the entry for k in the iteration order; compacting changes the positions, but not their order)
+		size_t s;
+		return state&&state.probe(k,s,pos);
 	}
 
 	V get(K k, lazy V alt){

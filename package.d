@@ -458,7 +458,6 @@ template SetX(T) if(is(T==class)){ alias SetX=SHSet!T; }
 template SetX(T) if(!is(T==class)){ alias SetX=HSet!(T,(a,b)=>a==b,hashOf); }
 alias setx=shset;
 alias MapX(K,V) = HashMap!(K,V,(a,b)=>a==b,hashOf);
-alias LayeredMapX(K,V) = LayeredMap!(K,V,(a,b)=>a==b,hashOf);
 alias PersistentMapX(K,V) = PersistentMap!(K,V,(a,b)=>a==b,hashOf);
 alias IdMapX(K,V) = HashMap!(K,V,(a,b)=>a is b,a=>hashOf(cast(void*)a),Storage.compact,false);
 

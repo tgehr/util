@@ -83,7 +83,6 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 		size_t length;    // number of live entries
 		size_t deletedSlots;
 		static if(!stable) size_t tombstones;
-		static if(!stable) uint keepPositions; // (no compaction while an iteration relies on the positions, see `LayeredMap.opApply`)
 
 		private enum uint EMPTY=uint.max, DELETED=uint.max-1;
 		enum initialIndexSize = 16;
@@ -196,14 +195,14 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 		// (which invalidates slots obtained from earlier probes)
 		bool ensureCapacity(){
 			static if(!stable){
-				if(tombstones>length+8&&!keepPositions){ // (also when insertions reuse the deleted index slots, e.g., of entries that are removed and inserted again)
+				if(tombstones>length+8){ // (also when insertions reuse the deleted index slots, e.g., of entries that are removed and inserted again)
 					compactEntries();
 					return true;
 				}
 			}
 			if(10*(length+deletedSlots+1)>7*index.length){
 				static if(!stable){
-					if(tombstones*2>length+1&&!keepPositions){
+					if(tombstones*2>length+1){
 						compactEntries();
 						return true;
 					}
@@ -451,367 +450,6 @@ struct HashMap(K_, V_, alias eq_ , alias h_, Storage storage_=Storage.compact, b
 	}
 
 	//static if(is(typeof(text(K.init,V.init))))
-	string toString(){
-		auto r="[";
-		foreach(k,v;this) r~=text(k,":",v)~", ";
-		if(r.length>2) r=r[0..$-2];
-		r~="]";
-		return r;
-	}
-}
-
-V identityCopy(V)(ref V v){ return v; } // (the default of `LayeredMap`)
-
-/+ A map with the semantics of `HashMap` with compact storage (iteration in the order of insertion, where assigning to
- a key that is present keeps its place). A large map is layered: its copies share a base that is never changed, and a
- copy only copies the entries that changed since the base was built, see `dup`. A small map is a `HashMap`, see
- `needsRebase`. `copyValue` copies a value that a copy must not share. +/
-struct LayeredMap(K_, V_, alias eq_, alias h_, alias copyValue=identityCopy){
-	alias K=K_;
-	alias V=V_;
-	private alias Table=HashMap!(K,V,eq_,h_);
-	private static struct Change{
-		V v;
-		size_t pos; // (of the key in the base, or `fresh` for an entry inserted after the base was built)
-		bool removed;
-	}
-	private enum size_t fresh=size_t.max;
-	private enum size_t smallSize=32; // (a map with at most twice as many entries is not layered: a copy of all of them costs about as much as the lookups in both layers save)
-	private static final class Base{
-		Table table;
-		Object cache; // (of the user, for the entries of the base, see `baseCache`)
-	}
-	private static final class Layers{ // (of a layered map, or of one that logs its changes)
-		Base base; // (`null`: not layered, see `plain`)
-		HashMap!(K,Change,eq_,h_) delta;
-		size_t length; // (of a layered map)
-		uint iterating; // (no new base while the entries are iterated)
-		K[] log; // (the keys of the changed entries since `startLog`)
-		bool logging;
-	}
-	private Table plain; // (the entries of a map that is not layered)
-	private Layers layers;
-	private size_t changes; // (also of the copies it was copied from)
-
-	private @property Base base(){ pragma(inline,true); return layers?layers.base:null; }
-	@property size_t length(){ pragma(inline,true); return base?layers.length:plain.length; }
-	@property bool isLayered(){ pragma(inline,true); return !!base; }
-	@property size_t numChanges()const{ return changes; } // (equal for a copy and the map it was copied from while neither changes)
-	void startLog(K[] initial=null){
-		if(!layers) layers=new Layers;
-		layers.logging=true;
-		layers.log=initial;
-	}
-	void stopLog(){
-		if(!layers) return;
-		layers.logging=false;
-		layers.log=null;
-		if(!layers.base) layers=null;
-	}
-	@property bool isLogging(){ return layers&&layers.logging; }
-	@property K[] changeLog(){ return layers?layers.log:null; } // (in the order of the changes, with repetitions, also of the entries that changed back; a copy does not log)
-	private void noteChange(K k){
-		pragma(inline,true);
-		changes++;
-		if(layers&&layers.logging) layers.log~=k;
-	}
-
-	private Change* findChange(K k){
-		return layers.delta.findPtr(k);
-	}
-	private bool basePosition(K k,out size_t pos){
-		size_t s;
-		return layers.base.table.state&&layers.base.table.state.probe(k,s,pos);
-	}
-	bool opBinaryRight(string op: "in")(K k){
-		pragma(inline,true);
-		if(!base) return k in plain;
-		return hasLayered(k);
-	}
-	private bool hasLayered(K k){
-		if(auto c=findChange(k)) return !c.removed;
-		size_t pos;
-		return basePosition(k,pos);
-	}
-	V get(K k, lazy V alt){
-		pragma(inline,true);
-		if(!base) return plain.get(k,alt);
-		bool found;
-		auto v=getLayered(k,found);
-		return found?v:alt;
-	}
-	private V getLayered(K k,out bool found){
-		if(auto c=findChange(k)){
-			found=!c.removed;
-			return found?c.v:V.init;
-		}
-		size_t pos;
-		if(basePosition(k,pos)){
-			found=true;
-			return layers.base.table.state.entryAt(pos).v;
-		}
-		return V.init;
-	}
-	V opIndex(K k){
-		pragma(inline,true);
-		if(!base) return plain[k];
-		return indexLayered(k);
-	}
-	private V indexLayered(K k){
-		if(auto c=findChange(k)){
-			if(!c.removed) return c.v;
-		}else{
-			size_t pos;
-			if(basePosition(k,pos)) return layers.base.table.state.entryAt(pos).v;
-		}
-		static if(is(typeof(text(k)))) assert(0, text("key not found: ",k));
-		else assert(0, "key not found");
-	}
-	void opIndexAssign(V v, K k){
-		pragma(inline,true);
-		noteChange(k);
-		if(!base){
-			plain[k]=v;
-			return;
-		}
-		assignLayered(v,k);
-	}
-	private void assignLayered(V v,K k){
-		if(auto c=findChange(k)){
-			if(!c.removed){ c.v=v; return; }
-			layers.delta.remove(k); // (inserted again after it was removed: it moves to the end)
-			layers.delta[k]=Change(v,fresh,false);
-			layers.length++;
-			return;
-		}
-		size_t pos;
-		if(basePosition(k,pos)){
-			layers.delta[k]=Change(v,pos,false);
-			return;
-		}
-		layers.delta[k]=Change(v,fresh,false);
-		layers.length++;
-	}
-	bool remove(K k){
-		pragma(inline,true);
-		noteChange(k);
-		if(!base) return plain.remove(k);
-		return removeLayered(k);
-	}
-	private bool removeLayered(K k){
-		size_t pos;
-		if(auto c=findChange(k)){
-			if(c.removed) return false;
-			if(c.pos!=fresh){
-				c.removed=true;
-				c.v=V.init;
-			}else{
-				layers.delta.remove(k);
-				if(basePosition(k,pos)) layers.delta[k]=Change(V.init,pos,true); // (inserted again after it was removed from the base)
-			}
-			layers.length--;
-			return true;
-		}
-		if(!basePosition(k,pos)) return false;
-		layers.delta[k]=Change(V.init,pos,true);
-		layers.length--;
-		return true;
-	}
-	void clear(){
-		changes++;
-		if(isLogging) foreach(k,ref v;this) layers.log~=k;
-		plain.clear();
-		if(!layers) return;
-		layers.base=null;
-		layers.delta.clear();
-		layers.length=0;
-		if(!layers.logging) layers=null;
-	}
-	@property size_t positionLimit(){ // (all positions are smaller)
-		if(!base) return plain.state?plain.state.eused:0;
-		return (layers.base.table.state?layers.base.table.state.eused:0)+(layers.delta.state?layers.delta.state.eused:0);
-	}
-	bool tryGetPosition(K k,out size_t pos){ // (of the entry for k in the iteration order)
-		pragma(inline,true);
-		if(!base) return plain.tryGetPosition(k,pos);
-		return positionLayered(k,pos);
-	}
-	private bool positionLayered(K k,out size_t pos){
-		if(auto c=findChange(k)){
-			if(c.removed) return false;
-			if(c.pos!=fresh){ pos=c.pos; return true; }
-			size_t dpos;
-			if(!layers.delta.tryGetPosition(k,dpos)) return false;
-			pos=(layers.base.table.state?layers.base.table.state.eused:0)+dpos;
-			return true;
-		}
-		return basePosition(k,pos);
-	}
-	private void rebase(){ // (a new base with all entries, or none, see `needsRebase`)
-		auto n=length;
-		if(!base){ // (its values are only in the new base)
-			auto nbase=new Base;
-			nbase.table=plain;
-			plain=Table.init;
-			if(!layers) layers=new Layers;
-			layers.base=nbase;
-			layers.length=n;
-			return;
-		}
-		Table table;
-		foreach(k,v;this) table[k]=copyValue(v);
-		layers.delta.clear();
-		if(n<=smallSize){
-			layers.base=null;
-			plain=table;
-			if(!layers.logging) layers=null;
-			return;
-		}
-		auto nbase=new Base;
-		nbase.table=table;
-		layers.base=nbase;
-	}
-	private bool needsRebase(){
-		import std.math: sqrt;
-		if(!base) return plain.length>2*smallSize&&!plain.state.keepPositions; // (not while it is iterated, see `opApply`)
-		if(layers.length<=smallSize) return true;
-		return layers.delta.length>16+2*cast(size_t)sqrt(cast(double)layers.base.table.length);
-	}
-	LayeredMap dup(){ // (of a layered map proportional to the number of changed entries)
-		if(!(layers&&layers.iterating)&&needsRebase()) rebase();
-		LayeredMap r;
-		r.changes=changes;
-		if(!base){
-			r.plain=plain.dup();
-			static if(!__traits(isSame,copyValue,identityCopy)) foreach(ref v;r.plain) v=copyValue(v);
-			return r;
-		}
-		r.layers=new Layers;
-		r.layers.base=layers.base;
-		r.layers.delta=layers.delta.dup(layers.delta.length/4+4);
-		static if(!__traits(isSame,copyValue,identityCopy)) foreach(ref c;r.layers.delta) if(!c.removed) c.v=copyValue(c.v);
-		r.layers.length=layers.length;
-		return r;
-	}
-	V* own(K k){ // (the value for `k` that this map does not share with its copies, valid until the next change; `null` if there is none; see `noteChanged`)
-		pragma(inline,true);
-		if(!base) return plain.findPtr(k);
-		return ownLayered(k);
-	}
-	private V* ownLayered(K k){
-		if(auto c=findChange(k)) return c.removed?null:&c.v;
-		size_t pos;
-		if(!basePosition(k,pos)) return null;
-		layers.delta[k]=Change(copyValue(layers.base.table.state.entryAt(pos).v),pos,false);
-		return &findChange(k).v;
-	}
-	void noteChanged(K k){ pragma(inline,true); noteChange(k); } // (the caller changes the value that `own` returns)
-	bool owns(K k){ // (whether the value for `k` is not shared with the base)
-		pragma(inline,true);
-		if(!base) return k in plain;
-		return !!findChange(k);
-	}
-	Object* baseCache(){ return base?&layers.base.cache:null; } // (for the entries of the base, which never change)
-	int opApplyBase(scope int delegate(K,V) dg){ // (the entries of the base, also those that this map changed)
-		if(base) foreach(k,v;layers.base.table) if(auto r=dg(k,v)) return r;
-		return 0;
-	}
-	int opApplyOwned(scope int delegate(K,ref V) dg)in{ // (the entries of a map that is not layered, which may be changed through the references: each counts as changed, see `noteChanged`)
-		assert(!base);
-	}do{
-		auto pstate=plain.state;
-		if(!pstate) return 0;
-		immutable n=pstate.eused;
-		pstate.keepPositions++;
-		scope(exit) pstate.keepPositions--;
-		foreach(i;0..n){
-			if(pstate.tombAt(i)) continue;
-			auto k=pstate.entryAt(i).k;
-			noteChange(k);
-			if(auto r=dg(k,pstate.entryAt(i).v)) return r;
-		}
-		return 0;
-	}
-	int opApplyChanged(scope int delegate(K) dg){ // (the keys whose entries may differ from those of the base)
-		if(!base){
-			foreach(k,ref v;plain) if(auto r=dg(k)) return r;
-			return 0;
-		}
-		foreach(k,ref c;layers.delta) if(auto r=dg(k)) return r;
-		return 0;
-	}
-	int opApply(scope int delegate(ref V) dg){
-		return opApply((ref K k,ref V v)=>dg(v));
-	}
-	int opApply(scope int delegate(ref K,ref V) dg){ // (assignments to the values are written back)
-		if(!base){
-			auto pstate=plain.state;
-			if(!pstate) return 0;
-			immutable n=pstate.eused; // (as for `HashMap`: not the entries inserted by the loop body)
-			pstate.keepPositions++;
-			scope(exit) pstate.keepPositions--;
-			foreach(i;0..n){
-				if(pstate.tombAt(i)) continue;
-				K k=pstate.entryAt(i).k;
-				V v=pstate.entryAt(i).v;
-				auto old=v;
-				auto r=dg(k,v);
-				if(v !is old) this[k]=v;
-				if(r) return r;
-			}
-			return 0;
-		}
-		auto l=layers;
-		l.iterating++;
-		scope(exit) l.iterating--;
-		auto dstate=l.delta.state;
-		immutable n=dstate?dstate.eused:0; // (as for `HashMap`: not the entries inserted by the loop body)
-		if(dstate) dstate.keepPositions++;
-		scope(exit) if(dstate) dstate.keepPositions--;
-		if(l.base.table.state){
-			auto bstate=l.base.table.state;
-			foreach(i;0..bstate.eused){
-				if(bstate.tombAt(i)) continue;
-				K k=bstate.entryAt(i).k;
-				V v;
-				if(auto c=findChange(k)){
-					if(c.removed||c.pos==fresh) continue;
-					v=c.v;
-				}else v=bstate.entryAt(i).v;
-				auto old=v;
-				auto r=dg(k,v);
-				if(v !is old) this[k]=v;
-				if(r) return r;
-			}
-		}
-		if(dstate){
-			foreach(i;0..n){
-				if(dstate.tombAt(i)) continue;
-				auto c=&dstate.entryAt(i).v;
-				if(c.removed||c.pos!=fresh) continue;
-				K k=dstate.entryAt(i).k;
-				V v=c.v;
-				auto old=v;
-				auto r=dg(k,v);
-				if(v !is old) this[k]=v;
-				if(r) return r;
-			}
-		}
-		return 0;
-	}
-	@property V[] values(){
-		auto r=new V[](length);
-		size_t i=0;
-		foreach(v;this) r[i++]=v;
-		return r;
-	}
-	@property V[] byValue(){ return values; }
-	@property K[] keys(){
-		auto r=new K[](length);
-		size_t i=0;
-		foreach(k,v;this) r[i++]=k;
-		return r;
-	}
 	string toString(){
 		auto r="[";
 		foreach(k,v;this) r~=text(k,":",v)~", ";
@@ -1301,6 +939,25 @@ struct PersistentMap(K_, V_, alias eq_, alias h_){
 	V get(K k, lazy V alt){
 		if(auto e=find(root,k,hashKey(k))) return e.v;
 		return alt;
+	}
+	bool tryGet(K k,out V v){
+		if(auto e=find(root,k,hashKey(k))){
+			v=e.v;
+			return true;
+		}
+		return false;
+	}
+	V* peek(K k){ // (the value for `k`, if any, valid until the next change: only to be read, as the copies share it)
+		if(auto e=find(root,k,hashKey(k))) return &e.v;
+		return null;
+	}
+	void eachKey(scope void delegate(K) dg){ // (in no particular order; the map does not change meanwhile)
+		void visit(Node* n){
+			if(!n) return;
+			foreach(ref e;entries(n)[0..numData(n)]) dg(e.k);
+			foreach(c;children(n)[0..numChildren(n)]) visit(c);
+		}
+		visit(root);
 	}
 	V opIndex(K k){
 		if(auto e=find(root,k,hashKey(k))) return e.v;

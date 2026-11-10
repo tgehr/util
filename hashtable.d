@@ -1020,3 +1020,386 @@ T setMinus(T)(T a,T b){
 	return r;
 }
 
+/+ A map with the semantics of `HashMap` with compact storage (iteration in the order of insertion, where assigning to a
+ key that is present keeps its place, and a key inserted again after its removal moves to the end), whose copies share
+ their entries: a copy takes constant time, and a change copies the nodes on the path to its entry in a hash trie, so
+ that the copies of a map, e.g., the tables of nested scopes, only take memory for the entries that they change. +/
+struct PersistentMap(K_, V_, alias eq_, alias h_){
+	import core.memory: GC;
+	import core.bitop: popcnt;
+	alias K=K_;
+	alias V=V_;
+	private static struct Entry{
+		K k;
+		V v;
+		size_t pos; // (the order of the entries, see `nextPos`)
+	}
+	private enum bits=4,width=1<<bits,hashBits=64;
+	private static struct Node{ // (followed by its entries and then its children, in the order of their slots)
+		ushort dataMap,nodeMap; // (the slots that hold an entry, and those that hold a child)
+		uint numCollisions; // (of a node below the last level of the hash: its entries have equal hashes)
+		Owner owner; // (the only map that refers to it, if it is the map's `owner`: that map changes it in place)
+	}
+	private static final class Owner{
+		bool copied; // (the map was copied: the copies share its nodes)
+	}
+	private Node* root;
+	private Owner owner; // (of the nodes that only this map refers to; none after a copy, see `dup`)
+	this(this){ // (a copy that shares the entries: neither changes the nodes in place any more, see `owner`)
+		if(!owner) return;
+		owner.copied=true;
+		owner=null;
+	}
+	private size_t length_;
+	private size_t nextPos; // (of the next key that is inserted)
+	private size_t changes; // (also of the copies it was copied from)
+	private static final class Log{
+		K[] keys; // (of the changed entries since `startLog`)
+	}
+	private Log log;
+
+	private static ulong hashKey(K k){
+		ulong h=h_(k);
+		h^=h>>33;
+		h*=0xff51afd7ed558ccdUL;
+		h^=h>>33;
+		h*=0xc4ceb9fe1a85ec53UL;
+		h^=h>>33;
+		return h;
+	}
+	private static uint slot(ulong h,uint shift){ return cast(uint)(h>>shift)&(width-1); }
+	private static size_t index(uint map,uint bit){ return popcnt(map&(bit-1)); }
+	private static size_t numData(const(Node)* n){ return n.nodeMap==0&&n.numCollisions?n.numCollisions:popcnt(n.dataMap); }
+	private static size_t numChildren(const(Node)* n){ return popcnt(n.nodeMap); }
+	private static Entry* entries(Node* n){ return cast(Entry*)(cast(ubyte*)n+Node.sizeof); }
+	private static Node** children(Node* n){ return cast(Node**)(cast(ubyte*)n+Node.sizeof+numData(n)*Entry.sizeof); }
+	private static Node* allocNode(ushort dataMap,ushort nodeMap,uint numCollisions,Owner owner){
+		auto nd=nodeMap==0&&numCollisions?numCollisions:popcnt(dataMap);
+		auto n=cast(Node*)GC.calloc(Node.sizeof+nd*Entry.sizeof+popcnt(nodeMap)*(Node*).sizeof);
+		n.dataMap=dataMap;
+		n.nodeMap=nodeMap;
+		n.numCollisions=numCollisions;
+		n.owner=owner;
+		return n;
+	}
+
+	private static Entry* find(Node* n,K k,ulong h){
+		for(uint shift=0;n;shift+=bits){
+			if(shift>=hashBits){
+				foreach(ref e;entries(n)[0..n.numCollisions]) if(eq_(e.k,k)) return &e;
+				return null;
+			}
+			auto bit=1u<<slot(h,shift);
+			if(n.dataMap&bit){
+				auto e=&entries(n)[index(n.dataMap,bit)];
+				return eq_(e.k,k)?e:null;
+			}
+			if(!(n.nodeMap&bit)) return null;
+			n=children(n)[index(n.nodeMap,bit)];
+		}
+		return null;
+	}
+	private static Node* single(ref Entry e,ulong h,uint shift,Owner o){
+		if(shift>=hashBits){
+			auto r=allocNode(0,0,1,o);
+			entries(r)[0]=e;
+			return r;
+		}
+		auto r=allocNode(cast(ushort)(1u<<slot(h,shift)),0,0,o);
+		entries(r)[0]=e;
+		return r;
+	}
+	private static Node* pair(ref Entry a,ulong ha,ref Entry b,ulong hb,uint shift,Owner o){ // (a node with both entries, whose hashes agree below `shift`)
+		if(shift>=hashBits){
+			auto r=allocNode(0,0,2,o);
+			entries(r)[0]=a;
+			entries(r)[1]=b;
+			return r;
+		}
+		auto sa=slot(ha,shift),sb=slot(hb,shift);
+		if(sa==sb){
+			auto r=allocNode(0,cast(ushort)(1u<<sa),0,o);
+			children(r)[0]=pair(a,ha,b,hb,shift+bits,o);
+			return r;
+		}
+		auto r=allocNode(cast(ushort)((1u<<sa)|(1u<<sb)),0,0,o);
+		if(sa<sb){ entries(r)[0]=a; entries(r)[1]=b; }
+		else{ entries(r)[0]=b; entries(r)[1]=a; }
+		return r;
+	}
+	private static Node* withEntry(Node* n,uint bit,ref Entry e,Owner o){ // (a copy of `n` with `e` in the free slot `bit`)
+		auto r=allocNode(cast(ushort)(n.dataMap|bit),n.nodeMap,0,o);
+		auto i=index(n.dataMap,bit),nd=numData(n);
+		auto re=entries(r),ne=entries(n);
+		re[0..i]=ne[0..i];
+		re[i]=e;
+		re[i+1..nd+1]=ne[i..nd];
+		children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
+		return r;
+	}
+	private static Node* withChild(Node* n,uint bit,Node* c,Owner o){ // (a copy of `n` with the child `c` in place of its entry in the slot `bit`)
+		auto r=allocNode(cast(ushort)(n.dataMap&~bit),cast(ushort)(n.nodeMap|bit),0,o);
+		auto i=index(n.dataMap,bit),nd=numData(n);
+		auto re=entries(r),ne=entries(n);
+		re[0..i]=ne[0..i];
+		re[i..nd-1]=ne[i+1..nd];
+		auto j=index(n.nodeMap,bit),nc=numChildren(n);
+		auto rc=children(r),nc_=children(n);
+		rc[0..j]=nc_[0..j];
+		rc[j]=c;
+		rc[j+1..nc+1]=nc_[j..nc];
+		return r;
+	}
+	private static Node* own(Node* n,Owner o){ // (`n`, or a copy of it that `o` owns)
+		if(n.owner is o) return n;
+		auto r=allocNode(n.dataMap,n.nodeMap,n.numCollisions,o);
+		auto nd=numData(n),nc=numChildren(n);
+		entries(r)[0..nd]=entries(n)[0..nd];
+		children(r)[0..nc]=children(n)[0..nc];
+		return r;
+	}
+	private static Node* insert(Node* n,ref Entry e,ulong h,uint shift,Owner o,out bool found){ // (`found`: the key was present, and keeps its position)
+		if(!n) return single(e,h,shift,o);
+		if(shift>=hashBits){
+			foreach(i,ref x;entries(n)[0..n.numCollisions]){
+				if(!eq_(x.k,e.k)) continue;
+				found=true;
+				auto r=own(n,o);
+				entries(r)[i].v=e.v;
+				return r;
+			}
+			auto r=allocNode(0,0,n.numCollisions+1,o);
+			entries(r)[0..n.numCollisions]=entries(n)[0..n.numCollisions];
+			entries(r)[n.numCollisions]=e;
+			return r;
+		}
+		auto bit=1u<<slot(h,shift);
+		if(n.dataMap&bit){
+			auto i=index(n.dataMap,bit);
+			auto x=&entries(n)[i];
+			if(eq_(x.k,e.k)){
+				found=true;
+				if(x.v is e.v) return n;
+				auto r=own(n,o);
+				entries(r)[i].v=e.v;
+				return r;
+			}
+			auto c=pair(*x,hashKey(x.k),e,h,shift+bits,o);
+			return withChild(n,bit,c,o);
+		}
+		if(n.nodeMap&bit){
+			auto j=index(n.nodeMap,bit);
+			auto c=insert(children(n)[j],e,h,shift+bits,o,found);
+			if(c is children(n)[j]) return n;
+			auto r=own(n,o);
+			children(r)[j]=c;
+			return r;
+		}
+		return withEntry(n,bit,e,o);
+	}
+	private static bool isSingle(Node* n){ return n.nodeMap==0&&numData(n)==1; }
+	private static Node* remove(Node* n,K k,ulong h,uint shift,Owner o,out bool removed){ // (`null` if it has no entries left)
+		if(!n) return null;
+		if(shift>=hashBits){
+			foreach(i,ref x;entries(n)[0..n.numCollisions]){
+				if(!eq_(x.k,k)) continue;
+				removed=true;
+				if(n.numCollisions==1) return null;
+				auto r=allocNode(0,0,n.numCollisions-1,o);
+				entries(r)[0..i]=entries(n)[0..i];
+				entries(r)[i..n.numCollisions-1]=entries(n)[i+1..n.numCollisions];
+				return r;
+			}
+			return n;
+		}
+		auto bit=1u<<slot(h,shift);
+		if(n.dataMap&bit){
+			auto i=index(n.dataMap,bit);
+			if(!eq_(entries(n)[i].k,k)) return n;
+			removed=true;
+			if(n.dataMap==bit&&!n.nodeMap) return null;
+			auto r=allocNode(cast(ushort)(n.dataMap&~bit),n.nodeMap,0,o);
+			auto nd=numData(n);
+			entries(r)[0..i]=entries(n)[0..i];
+			entries(r)[i..nd-1]=entries(n)[i+1..nd];
+			children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
+			return r;
+		}
+		if(!(n.nodeMap&bit)) return n;
+		auto j=index(n.nodeMap,bit);
+		auto c=remove(children(n)[j],k,h,shift+bits,o,removed);
+		if(!removed) return n;
+		if(c&&!isSingle(c)){
+			if(c is children(n)[j]) return n;
+			auto r=own(n,o);
+			children(r)[j]=c;
+			return r;
+		}
+		if(!c&&n.nodeMap==bit&&!n.dataMap) return null;
+		// (the child is gone or holds a single entry, which moves into this node, as the trie stays canonical)
+		auto r=allocNode(cast(ushort)(c?n.dataMap|bit:n.dataMap),cast(ushort)(n.nodeMap&~bit),0,o);
+		auto nd=numData(n);
+		auto re=entries(r),ne=entries(n);
+		if(c){
+			auto i=index(n.dataMap,bit);
+			re[0..i]=ne[0..i];
+			re[i]=entries(c)[0];
+			re[i+1..nd+1]=ne[i..nd];
+		}else re[0..nd]=ne[0..nd];
+		auto nc=numChildren(n);
+		auto rc=children(r),nc_=children(n);
+		rc[0..j]=nc_[0..j];
+		rc[j..nc-1]=nc_[j+1..nc];
+		return r;
+	}
+	private static void collect(Node* n,Entry[] r,ref size_t i){
+		if(!n) return;
+		auto nd=numData(n);
+		r[i..i+nd]=entries(n)[0..nd];
+		i+=nd;
+		foreach(c;children(n)[0..numChildren(n)]) collect(c,r,i);
+	}
+	private Entry[] sorted(){ // (the entries in the order of the map: a radix sort by position)
+		auto r=new Entry[](length_);
+		size_t i=0;
+		collect(root,r,i);
+		assert(i==length_);
+		if(length_<=32){
+			import std.algorithm: sort;
+			sort!((a,b)=>a.pos<b.pos)(r);
+			return r;
+		}
+		enum digit=8,radix=1<<digit;
+		auto t=new Entry[](length_);
+		size_t[radix] counts;
+		for(uint shift=0;shift<64&&(nextPos-1)>>shift;shift+=digit){
+			counts[]=0;
+			foreach(ref e;r) counts[(e.pos>>shift)&(radix-1)]++;
+			size_t sum=0;
+			foreach(ref c;counts){ auto x=c; c=sum; sum+=x; }
+			foreach(ref e;r) t[counts[(e.pos>>shift)&(radix-1)]++]=e;
+			auto tmp=r; r=t; t=tmp;
+		}
+		return r;
+	}
+
+	@property size_t length(){ return length_; }
+	@property size_t numChanges()const{ return changes; } // (equal for a copy and the map it was copied from while neither changes)
+	void startLog(K[] initial=null){
+		if(!log) log=new Log;
+		log.keys=initial;
+	}
+	void stopLog(){ log=null; }
+	@property bool isLogging(){ return !!log; }
+	@property K[] changeLog(){ return log?log.keys:null; } // (in the order of the changes, with repetitions, also of the entries that changed back; a copy does not log)
+	private void noteChange(K k){
+		pragma(inline,true);
+		changes++;
+		if(log) log.keys~=k;
+	}
+	bool opBinaryRight(string op: "in")(K k){ return !!find(root,k,hashKey(k)); }
+	V get(K k, lazy V alt){
+		if(auto e=find(root,k,hashKey(k))) return e.v;
+		return alt;
+	}
+	V opIndex(K k){
+		if(auto e=find(root,k,hashKey(k))) return e.v;
+		import std.conv: text;
+		static if(is(typeof(text(k)))) assert(0, text("key not found: ",k));
+		else assert(0, "key not found");
+	}
+	void opIndexAssign(V v, K k){
+		noteChange(k);
+		auto e=Entry(k,v,nextPos);
+		bool found;
+		if(!owner||owner.copied) owner=new Owner;
+		root=insert(root,e,hashKey(k),0,owner,found);
+		if(!found){
+			nextPos++;
+			length_++;
+		}
+	}
+	bool remove(K k){
+		noteChange(k);
+		bool removed;
+		if(!owner||owner.copied) owner=new Owner;
+		root=remove(root,k,hashKey(k),0,owner,removed);
+		if(removed) length_--;
+		return removed;
+	}
+	void clear(){
+		changes++;
+		if(log) foreach(ref e;sorted()) log.keys~=e.k;
+		root=null;
+		length_=0;
+	}
+	@property size_t positionLimit(){ return nextPos; } // (all positions are smaller)
+	bool tryGetPosition(K k,out size_t pos){ // (of the entry for k in the iteration order)
+		if(auto e=find(root,k,hashKey(k))){
+			pos=e.pos;
+			return true;
+		}
+		return false;
+	}
+	PersistentMap dup(){
+		owner=null;
+		PersistentMap r;
+		r.root=root;
+		r.length_=length_;
+		r.nextPos=nextPos;
+		r.changes=changes;
+		return r;
+	}
+	int opApply(scope int delegate(ref V) dg){
+		return opApply((ref K k,ref V v)=>dg(v));
+	}
+	int opApply(scope int delegate(ref K,ref V) dg){ // (the entries at the start, in their order, unless they were removed before their turns; assignments to the values are written back)
+		auto start=changes;
+		foreach(ref e;sorted()){
+			V v=e.v;
+			if(changes!=start){ // (the map changed since the start)
+				auto cur=find(root,e.k,hashKey(e.k));
+				if(!cur||cur.pos!=e.pos) continue;
+				v=cur.v;
+			}
+			K k=e.k;
+			auto old=v;
+			auto r=dg(k,v);
+			if(v !is old) this[k]=v;
+			if(r) return r;
+		}
+		return 0;
+	}
+	auto byValue(){
+		import std.algorithm: map;
+		return sorted().map!(e=>e.v);
+	}
+	@property V[] values(){
+		import std.algorithm: map;
+		import std.array: array;
+		return sorted().map!(e=>e.v).array;
+	}
+	@property K[] keys(){
+		import std.algorithm: map;
+		import std.array: array;
+		return sorted().map!(e=>e.k).array;
+	}
+	string toString(){
+		import std.conv: text;
+		auto r="[";
+		foreach(k,v;this) r~=text(k,":",v)~", ";
+		if(r.length>2) r=r[0..$-2];
+		r~="]";
+		return r;
+	}
+	size_t censusNodes(scope bool delegate(const(void)*) seen){ // (the bytes of the nodes that `seen` did not see yet)
+		size_t r=0;
+		void visit(Node* n){
+			if(!n||seen(n)) return;
+			r+=GC.sizeOf(n);
+			foreach(c;children(n)[0..numChildren(n)]) visit(c);
+		}
+		visit(root);
+		return r;
+	}
+}

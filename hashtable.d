@@ -662,7 +662,8 @@ T setMinus(T)(T a,T b){
  key that is present keeps its place, and a key inserted again after its removal moves to the end), whose copies share
  their entries: a copy takes constant time, and a change copies the nodes on the path to its entry in a hash trie, so
  that the copies of a map, e.g., the tables of nested scopes, only take memory for the entries that they change. With
- `live_`, a predicate on the values, the nodes note whether their subtrees have live values, see `liveValues`. +/
+ `live_`, which gives the properties of a value as the bits of a mask (e.g., `true` for a live value), taken when it is
+ inserted, the nodes note which of them the values of their subtrees have, see `liveValues`. +/
 struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 	import core.memory: GC;
 	import core.bitop: popcnt;
@@ -671,14 +672,24 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 	private static struct Entry{
 		K k;
 		V v;
-		size_t pos; // (the order of the entries, see `nextPos`)
+		size_t pos; // (the order of the entries, see `nextPos`; with `live_`, shifted, above the properties of `v`, see `entry`)
 	}
 	private enum bits=4,width=1<<bits,hashBits=64;
 	private enum tracksLive=!is(typeof(live_)==typeof(null));
+	private enum posShift=tracksLive?8:0;
+	private static size_t position(ref Entry e){ return e.pos>>posShift; }
+	private static Entry entry(K k,V v,size_t position){ // (with the properties of `v` when it is inserted)
+		static if(tracksLive) return Entry(k,v,position<<posShift|cast(ubyte)live_(v));
+		else return Entry(k,v,position);
+	}
+	private static void setValue(ref Entry x,ref Entry e){ // (`x` keeps its position)
+		x.v=e.v;
+		static if(tracksLive) x.pos=x.pos&~cast(size_t)ubyte.max|props(e);
+	}
 	private static struct Node{ // (followed by its entries and then its children, in the order of their slots)
 		ushort dataMap,nodeMap; // (the slots that hold an entry, and those that hold a child)
 		ushort numCollisions; // (of a node below the last level of the hash: its entries have equal hashes)
-		bool anyLive; // (an entry of the subtree has a live value, if the map tracks them)
+		ubyte live; // (the properties that values of the subtree have, if the map tracks them, see `live_`)
 		Owner owner; // (the only map that refers to it, if it is the map's `owner`: that map changes it in place)
 	}
 	private static final class Owner{
@@ -724,21 +735,21 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		n.owner=owner;
 		return n;
 	}
-	private static bool isLive(ref Entry e){
-		static if(tracksLive) return live_(e.v);
-		else return false;
+	private static ubyte props(ref Entry e){
+		static if(tracksLive) return cast(ubyte)e.pos;
+		else return 0;
 	}
-	private static void rescan(Node* n){ // (`anyLive` from the entries and children of `n`)
+	private static void rescan(Node* n,ubyte of=ubyte.max){ // (`live` from the entries and children of `n`, for the properties of `of`)
 		static if(tracksLive){
-			n.anyLive=false;
-			foreach(ref e;entries(n)[0..numData(n)]) if(live_(e.v)){ n.anyLive=true; return; }
-			foreach(c;children(n)[0..numChildren(n)]) if(c.anyLive){ n.anyLive=true; return; }
+			n.live&=cast(ubyte)~of;
+			foreach(ref e;entries(n)[0..numData(n)]){ n.live|=props(e)&of; if((n.live&of)==of) return; }
+			foreach(c;children(n)[0..numChildren(n)]){ n.live|=c.live&of; if((n.live&of)==of) return; }
 		}
 	}
-	private static void replaced(Node* n,bool wasLive,bool isLive){ // (an entry or child of `n` with live values, or without, replaced one with them, or without)
+	private static void replaced(Node* n,ubyte was,ubyte now){ // (an entry or child of `n` whose values had the properties `was` replaced by one whose values have `now`)
 		static if(tracksLive){
-			if(isLive) n.anyLive=true;
-			else if(wasLive) rescan(n);
+			n.live|=now;
+			if(auto lost=cast(ubyte)(was&~now)) rescan(n,lost); // (only those, which an entry or child usually still has)
 		}
 	}
 
@@ -761,29 +772,29 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 	private static Node* single(ref Entry e,ulong h,uint shift,Owner o){
 		auto r=shift>=hashBits?allocNode(0,0,1,o):allocNode(cast(ushort)(1u<<slot(h,shift)),0,0,o);
 		entries(r)[0]=e;
-		static if(tracksLive) r.anyLive=isLive(e);
+		static if(tracksLive) r.live=props(e);
 		return r;
 	}
 	private static Node* pair(ref Entry a,ulong ha,ref Entry b,ulong hb,uint shift,Owner o){ // (a node with both entries, whose hashes agree below `shift`)
-		static if(tracksLive) auto anyLive=isLive(a)||isLive(b);
+		static if(tracksLive) auto live=cast(ubyte)(props(a)|props(b));
 		if(shift>=hashBits){
 			auto r=allocNode(0,0,2,o);
 			entries(r)[0]=a;
 			entries(r)[1]=b;
-			static if(tracksLive) r.anyLive=anyLive;
+			static if(tracksLive) r.live=live;
 			return r;
 		}
 		auto sa=slot(ha,shift),sb=slot(hb,shift);
 		if(sa==sb){
 			auto r=allocNode(0,cast(ushort)(1u<<sa),0,o);
 			children(r)[0]=pair(a,ha,b,hb,shift+bits,o);
-			static if(tracksLive) r.anyLive=anyLive;
+			static if(tracksLive) r.live=live;
 			return r;
 		}
 		auto r=allocNode(cast(ushort)((1u<<sa)|(1u<<sb)),0,0,o);
 		if(sa<sb){ entries(r)[0]=a; entries(r)[1]=b; }
 		else{ entries(r)[0]=b; entries(r)[1]=a; }
-		static if(tracksLive) r.anyLive=anyLive;
+		static if(tracksLive) r.live=live;
 		return r;
 	}
 	private static Node* withEntry(Node* n,uint bit,ref Entry e,Owner o){ // (a copy of `n` with `e` in the free slot `bit`)
@@ -794,7 +805,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		re[i]=e;
 		re[i+1..nd+1]=ne[i..nd];
 		children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
-		static if(tracksLive) r.anyLive=n.anyLive||isLive(e);
+		static if(tracksLive) r.live=n.live|props(e);
 		return r;
 	}
 	private static Node* withChild(Node* n,uint bit,Node* c,Owner o){ // (a copy of `n` with the child `c` in place of its entry in the slot `bit`)
@@ -808,7 +819,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		rc[0..j]=nc_[0..j];
 		rc[j]=c;
 		rc[j+1..nc+1]=nc_[j..nc];
-		static if(tracksLive) r.anyLive=n.anyLive||c.anyLive; // (`c` has the entry of the slot)
+		static if(tracksLive) r.live=n.live|c.live; // (`c` has the entry of the slot)
 		return r;
 	}
 	private static Node* own(Node* n,Owner o){ // (`n`, or a copy of it that `o` owns)
@@ -817,7 +828,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		auto nd=numData(n),nc=numChildren(n);
 		entries(r)[0..nd]=entries(n)[0..nd];
 		children(r)[0..nc]=children(n)[0..nc];
-		static if(tracksLive) r.anyLive=n.anyLive;
+		static if(tracksLive) r.live=n.live;
 		return r;
 	}
 	private static Node* insert(Node* n,ref Entry e,ulong h,uint shift,Owner o,out bool found){ // (`found`: the key was present, and keeps its position)
@@ -827,15 +838,15 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 				if(!eq_(x.k,e.k)) continue;
 				found=true;
 				auto r=own(n,o);
-				auto wasLive=isLive(entries(r)[i]);
-				entries(r)[i].v=e.v;
-				replaced(r,wasLive,isLive(e));
+				auto was=props(entries(r)[i]);
+				setValue(entries(r)[i],e);
+				replaced(r,was,props(e));
 				return r;
 			}
 			auto r=allocNode(0,0,n.numCollisions+1,o);
 			entries(r)[0..n.numCollisions]=entries(n)[0..n.numCollisions];
 			entries(r)[n.numCollisions]=e;
-			static if(tracksLive) r.anyLive=n.anyLive||isLive(e);
+			static if(tracksLive) r.live=n.live|props(e);
 			return r;
 		}
 		auto bit=1u<<slot(h,shift);
@@ -844,11 +855,11 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 			auto x=&entries(n)[i];
 			if(eq_(x.k,e.k)){
 				found=true;
-				if(x.v is e.v) return n;
+				if(x.v is e.v&&props(*x)==props(e)) return n;
 				auto r=own(n,o);
-				auto wasLive=isLive(entries(r)[i]);
-				entries(r)[i].v=e.v;
-				replaced(r,wasLive,isLive(e));
+				auto was=props(entries(r)[i]);
+				setValue(entries(r)[i],e);
+				replaced(r,was,props(e));
 				return r;
 			}
 			auto c=pair(*x,hashKey(x.k),e,h,shift+bits,o);
@@ -857,24 +868,24 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		if(n.nodeMap&bit){
 			auto j=index(n.nodeMap,bit);
 			auto child=children(n)[j];
-			static if(tracksLive) auto wasLive=child.anyLive;
-			else enum wasLive=false;
+			static if(tracksLive) auto was=child.live;
+			else enum ubyte was=0;
 			auto c=insert(child,e,h,shift+bits,o,found);
-			return withReplacedChild(n,j,child,c,wasLive,o);
+			return withReplacedChild(n,j,child,c,was,o);
 		}
 		return withEntry(n,bit,e,o);
 	}
-	private static Node* withReplacedChild(Node* n,size_t j,Node* child,Node* c,bool wasLive,Owner o){ // (`n`, or a copy of it, with `c` in place of `child`; `wasLive`: `child.anyLive` before the change, which may have changed it in place)
+	private static Node* withReplacedChild(Node* n,size_t j,Node* child,Node* c,ubyte was,Owner o){ // (`n`, or a copy of it, with `c` in place of `child`; `was`: `child.live` before the change, which may have changed it in place)
 		if(c is child){
-			static if(tracksLive) if(c.anyLive!=wasLive){
+			static if(tracksLive) if(c.live!=was){
 				assert(n.owner is o); // (the parents of the nodes that `o` owns are owned by it)
-				replaced(n,wasLive,c.anyLive);
+				replaced(n,was,c.live);
 			}
 			return n;
 		}
 		auto r=own(n,o);
 		children(r)[j]=c;
-		static if(tracksLive) replaced(r,wasLive,c.anyLive);
+		static if(tracksLive) replaced(r,was,c.live);
 		return r;
 	}
 	private static bool isSingle(Node* n){ return n.nodeMap==0&&numData(n)==1; }
@@ -905,19 +916,19 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 			entries(r)[i..nd-1]=entries(n)[i+1..nd];
 			children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
 			static if(tracksLive){
-				r.anyLive=n.anyLive;
-				replaced(r,isLive(entries(n)[i]),false);
+				r.live=n.live;
+				replaced(r,props(entries(n)[i]),0);
 			}
 			return r;
 		}
 		if(!(n.nodeMap&bit)) return n;
 		auto j=index(n.nodeMap,bit);
 		auto child=children(n)[j];
-		static if(tracksLive) auto wasLive=child.anyLive;
-		else enum wasLive=false;
+		static if(tracksLive) auto was=child.live;
+		else enum ubyte was=0;
 		auto c=remove(child,k,h,shift+bits,o,removed);
 		if(!removed) return n;
-		if(c&&!isSingle(c)) return withReplacedChild(n,j,child,c,wasLive,o);
+		if(c&&!isSingle(c)) return withReplacedChild(n,j,child,c,was,o);
 		if(!c&&n.nodeMap==bit&&!n.dataMap) return null;
 		// (the child is gone or holds a single entry, which moves into this node, as the trie stays canonical)
 		auto r=allocNode(cast(ushort)(c?n.dataMap|bit:n.dataMap),cast(ushort)(n.nodeMap&~bit),0,o);
@@ -959,7 +970,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		enum digit=8,radix=1<<digit;
 		auto t=new Entry[](r.length);
 		size_t[radix] counts;
-		for(uint shift=0;shift<64&&(nextPos-1)>>shift;shift+=digit){
+		for(uint shift=posShift;shift<64&&(nextPos-1)>>(shift-posShift);shift+=digit){ // (the positions differ: the properties below them do not matter)
 			counts[]=0;
 			foreach(ref e;r) counts[(e.pos>>shift)&(radix-1)]++;
 			size_t sum=0;
@@ -1000,17 +1011,25 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		if(auto e=find(root,k,hashKey(k))) return &e.v;
 		return null;
 	}
-	static if(tracksLive) V[] liveValues(){ // (in the order of the map; it does not visit the subtrees without live values)
+	static if(tracksLive) V[] liveValues(ubyte mask=1,K[] keys=null,ubyte keysMask=0){ // (the values with some property of `mask`, and those of `keys` with some property of `keysMask`, in the order of the map; it does not visit the subtrees without such values)
 		Entry[] r;
 		void visit(Node* n){
-			if(!n||!n.anyLive) return;
-			foreach(ref e;entries(n)[0..numData(n)]) if(live_(e.v)) r~=e;
+			if(!n||!(n.live&mask)) return;
+			foreach(ref e;entries(n)[0..numData(n)]) if(props(e)&mask) r~=e;
 			foreach(c;children(n)[0..numChildren(n)]) visit(c);
 		}
 		visit(root);
+		auto numVisited=r.length;
+		foreach(k;keys) if(auto e=find(root,k,hashKey(k))) if(props(*e)&keysMask&&!(props(*e)&mask)) r~=*e;
+		r=sortedByPos(r);
+		if(r.length>numVisited){ // (the keys may repeat)
+			size_t j=0;
+			foreach(i,ref e;r) if(!j||position(r[j-1])!=position(e)) r[j++]=e;
+			r=r[0..j];
+		}
 		import std.algorithm: map;
 		import std.array: array;
-		return sortedByPos(r).map!(e=>e.v).array;
+		return r.map!(e=>e.v).array;
 	}
 	void eachKey(scope void delegate(K) dg){ // (in no particular order; the map does not change meanwhile)
 		void visit(Node* n){
@@ -1028,7 +1047,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 	}
 	void opIndexAssign(V v, K k){
 		noteChange(k);
-		auto e=Entry(k,v,nextPos);
+		auto e=entry(k,v,nextPos);
 		bool found;
 		if(!owner||owner.copied) owner=new Owner;
 		root=insert(root,e,hashKey(k),0,owner,found);
@@ -1054,7 +1073,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 	@property size_t positionLimit(){ return nextPos; } // (all positions are smaller)
 	bool tryGetPosition(K k,out size_t pos){ // (of the entry for k in the iteration order)
 		if(auto e=find(root,k,hashKey(k))){
-			pos=e.pos;
+			pos=position(*e);
 			return true;
 		}
 		return false;
@@ -1077,7 +1096,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 			V v=e.v;
 			if(changes!=start){ // (the map changed since the start)
 				auto cur=find(root,e.k,hashKey(e.k));
-				if(!cur||cur.pos!=e.pos) continue;
+				if(!cur||position(*cur)!=position(e)) continue;
 				v=cur.v;
 			}
 			K k=e.k;

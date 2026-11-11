@@ -735,6 +735,13 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		n.owner=owner;
 		return n;
 	}
+	private static void copyTo(T)(T[] dst,T[] src){ // (as `dst[]=src[]`, without the checks of the runtime: the nodes do not overlap)
+		assert(dst.length==src.length);
+		static if(__traits(isPOD,T)){
+			import core.stdc.string: memcpy;
+			if(src.length) memcpy(dst.ptr,src.ptr,src.length*T.sizeof);
+		}else dst[]=src[];
+	}
 	private static ubyte props(ref Entry e){
 		static if(tracksLive) return cast(ubyte)e.pos;
 		else return 0;
@@ -801,10 +808,10 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		auto r=allocNode(cast(ushort)(n.dataMap|bit),n.nodeMap,0,o);
 		auto i=index(n.dataMap,bit),nd=numData(n);
 		auto re=entries(r),ne=entries(n);
-		re[0..i]=ne[0..i];
+		copyTo(re[0..i],ne[0..i]);
 		re[i]=e;
-		re[i+1..nd+1]=ne[i..nd];
-		children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
+		copyTo(re[i+1..nd+1],ne[i..nd]);
+		copyTo(children(r)[0..numChildren(n)],children(n)[0..numChildren(n)]);
 		static if(tracksLive) r.live=n.live|props(e);
 		return r;
 	}
@@ -812,13 +819,13 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		auto r=allocNode(cast(ushort)(n.dataMap&~bit),cast(ushort)(n.nodeMap|bit),0,o);
 		auto i=index(n.dataMap,bit),nd=numData(n);
 		auto re=entries(r),ne=entries(n);
-		re[0..i]=ne[0..i];
-		re[i..nd-1]=ne[i+1..nd];
+		copyTo(re[0..i],ne[0..i]);
+		copyTo(re[i..nd-1],ne[i+1..nd]);
 		auto j=index(n.nodeMap,bit),nc=numChildren(n);
 		auto rc=children(r),nc_=children(n);
-		rc[0..j]=nc_[0..j];
+		copyTo(rc[0..j],nc_[0..j]);
 		rc[j]=c;
-		rc[j+1..nc+1]=nc_[j..nc];
+		copyTo(rc[j+1..nc+1],nc_[j..nc]);
 		static if(tracksLive) r.live=n.live|c.live; // (`c` has the entry of the slot)
 		return r;
 	}
@@ -826,8 +833,8 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		if(n.owner is o) return n;
 		auto r=allocNode(n.dataMap,n.nodeMap,n.numCollisions,o);
 		auto nd=numData(n),nc=numChildren(n);
-		entries(r)[0..nd]=entries(n)[0..nd];
-		children(r)[0..nc]=children(n)[0..nc];
+		copyTo(entries(r)[0..nd],entries(n)[0..nd]);
+		copyTo(children(r)[0..nc],children(n)[0..nc]);
 		static if(tracksLive) r.live=n.live;
 		return r;
 	}
@@ -844,7 +851,7 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 				return r;
 			}
 			auto r=allocNode(0,0,n.numCollisions+1,o);
-			entries(r)[0..n.numCollisions]=entries(n)[0..n.numCollisions];
+			copyTo(entries(r)[0..n.numCollisions],entries(n)[0..n.numCollisions]);
 			entries(r)[n.numCollisions]=e;
 			static if(tracksLive) r.live=n.live|props(e);
 			return r;
@@ -897,8 +904,8 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 				removed=true;
 				if(n.numCollisions==1) return null;
 				auto r=allocNode(0,0,n.numCollisions-1,o);
-				entries(r)[0..i]=entries(n)[0..i];
-				entries(r)[i..n.numCollisions-1]=entries(n)[i+1..n.numCollisions];
+				copyTo(entries(r)[0..i],entries(n)[0..i]);
+				copyTo(entries(r)[i..n.numCollisions-1],entries(n)[i+1..n.numCollisions]);
 				rescan(r);
 				return r;
 			}
@@ -912,9 +919,9 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 			if(n.dataMap==bit&&!n.nodeMap) return null;
 			auto r=allocNode(cast(ushort)(n.dataMap&~bit),n.nodeMap,0,o);
 			auto nd=numData(n);
-			entries(r)[0..i]=entries(n)[0..i];
-			entries(r)[i..nd-1]=entries(n)[i+1..nd];
-			children(r)[0..numChildren(n)]=children(n)[0..numChildren(n)];
+			copyTo(entries(r)[0..i],entries(n)[0..i]);
+			copyTo(entries(r)[i..nd-1],entries(n)[i+1..nd]);
+			copyTo(children(r)[0..numChildren(n)],children(n)[0..numChildren(n)]);
 			static if(tracksLive){
 				r.live=n.live;
 				replaced(r,props(entries(n)[i]),0);
@@ -936,21 +943,21 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		auto re=entries(r),ne=entries(n);
 		if(c){
 			auto i=index(n.dataMap,bit);
-			re[0..i]=ne[0..i];
+			copyTo(re[0..i],ne[0..i]);
 			re[i]=entries(c)[0];
-			re[i+1..nd+1]=ne[i..nd];
-		}else re[0..nd]=ne[0..nd];
+			copyTo(re[i+1..nd+1],ne[i..nd]);
+		}else copyTo(re[0..nd],ne[0..nd]);
 		auto nc=numChildren(n);
 		auto rc=children(r),nc_=children(n);
-		rc[0..j]=nc_[0..j];
-		rc[j..nc-1]=nc_[j+1..nc];
+		copyTo(rc[0..j],nc_[0..j]);
+		copyTo(rc[j..nc-1],nc_[j+1..nc]);
 		rescan(r);
 		return r;
 	}
 	private static void collect(Node* n,Entry[] r,ref size_t i){
 		if(!n) return;
 		auto nd=numData(n);
-		r[i..i+nd]=entries(n)[0..nd];
+		copyTo(r[i..i+nd],entries(n)[0..nd]);
 		i+=nd;
 		foreach(c;children(n)[0..numChildren(n)]) collect(c,r,i);
 	}

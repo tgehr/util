@@ -961,6 +961,15 @@ struct PersistentMap(K_, V_, alias eq_, alias h_, alias live_=null){
 		i+=nd;
 		foreach(c;children(n)[0..numChildren(n)]) collect(c,r,i);
 	}
+	private static bool anyValueImpl(Node* n,scope bool delegate(V) pred){
+		if(!n) return false;
+		foreach(ref e;entries(n)[0..numData(n)]) if(pred(e.v)) return true;
+		foreach(c;children(n)[0..numChildren(n)]) if(anyValueImpl(c,pred)) return true;
+		return false;
+	}
+	bool anyValue(scope bool delegate(V) pred){ // (as `byValue.any!pred`, in no particular order, without copying the entries)
+		return anyValueImpl(root,pred);
+	}
 	private Entry[] sorted(){ // (the entries in the order of the map)
 		auto r=new Entry[](length_);
 		size_t i=0;
